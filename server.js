@@ -16,11 +16,49 @@ const MIME_TYPES = new Map([
   [".txt", "text/plain; charset=utf-8"]
 ]);
 
+loadLocalEnv();
+
 const API_MODULES = {
   uploads: pathToFileURL(path.join(ROOT_DIR, "api", "uploads.mjs")).href,
   deleteUpload: pathToFileURL(path.join(ROOT_DIR, "api", "delete-upload.mjs")).href,
   view: pathToFileURL(path.join(ROOT_DIR, "api", "view.mjs")).href
 };
+
+function loadLocalEnv() {
+  for (const fileName of [".env.local", ".env"]) {
+    const filePath = path.join(ROOT_DIR, fileName);
+    let raw;
+    try {
+      raw = require("node:fs").readFileSync(filePath, "utf8");
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+      continue;
+    }
+
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) {
+        continue;
+      }
+
+      const splitAt = trimmed.indexOf("=");
+      if (splitAt === -1) {
+        continue;
+      }
+
+      const key = trimmed.slice(0, splitAt).trim();
+      let value = trimmed.slice(splitAt + 1).trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      if (key && process.env[key] === undefined) {
+        process.env[key] = value;
+      }
+    }
+  }
+}
 
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload);
