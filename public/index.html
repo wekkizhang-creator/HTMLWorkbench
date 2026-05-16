@@ -22,15 +22,22 @@
             <p id="originText">localhost</p>
           </div>
         </div>
-        <div class="metric-strip" aria-label="上传概览">
-          <div>
-            <span id="totalCount">0</span>
-            <small>已发布</small>
+        <div class="topbar-tools">
+          <div class="metric-strip" aria-label="上传概览">
+            <div>
+              <span id="totalCount">0</span>
+              <small>已发布</small>
+            </div>
+            <div>
+              <span id="latestTime">--</span>
+              <small>最新上传</small>
+            </div>
           </div>
-          <div>
-            <span id="latestTime">--</span>
-            <small>最新上传</small>
-          </div>
+          <button class="icon-button" id="logoutButton" type="button" aria-label="退出登录" title="退出登录">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M10 17 5 12l5-5M5 12h11M14 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
         </div>
       </header>
 
@@ -107,12 +114,24 @@
             </button>
           </div>
 
+          <div class="record-tools">
+            <label class="search-box">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                <path d="m16.5 16.5 4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+              <input id="searchInput" type="search" placeholder="搜索标题或描述">
+            </label>
+            <div class="tag-filter" id="tagFilter" aria-label="标签筛选"></div>
+          </div>
+
           <div class="table-frame">
             <table>
               <thead>
                 <tr>
                   <th>文件</th>
-                  <th>页面标题</th>
+                  <th>标题与描述</th>
+                  <th>标签</th>
                   <th>上传时间</th>
                   <th>大小</th>
                   <th>访问链接</th>
@@ -126,7 +145,7 @@
                 <path d="M13 8h16l6 6v26H13z" fill="#f3f6f4" stroke="#7c8985" stroke-width="1.8"/>
                 <path d="M29 8v7h6M18 24h12M18 30h8" fill="none" stroke="#1f9d85" stroke-width="1.8" stroke-linecap="round"/>
               </svg>
-              <span>暂无记录</span>
+              <span id="emptyText">暂无记录</span>
             </div>
           </div>
         </section>

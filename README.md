@@ -3,6 +3,8 @@ HTML 发布台
 
 一个适配 Vercel 部署的 HTML 上传发布台。上传 `.html` / `.htm` 文件后，系统会生成稳定的 `/view/:id` 访问链接，并在上传记录中管理文件、标题、大小、上传时间和链接。
 
+当前管理入口带密码验证，默认密码是 `885688`。上传时会自动从 HTML 的 `<title>`、`meta description`、标题和正文中生成文件描述与标签，记录页支持按标题/描述搜索，也支持按标签筛选。
+
 ## 本地运行
 
 ```bash
@@ -121,3 +123,16 @@ HTML_WORKBENCH_DATA_DIR=/var/lib/html-workbench
 ```
 
 `HTML_WORKBENCH_DATA_DIR` 是上传文件和记录的持久化目录。升级代码、重启服务、重新拉取 Git 分支都不会影响这个目录。
+
+管理入口密码可在 `/etc/html-workbench.env` 中修改：
+
+```bash
+HTML_WORKBENCH_PASSWORD=885688
+HTML_WORKBENCH_AUTH_SECRET=换成一串随机字符
+```
+
+修改后重启服务：
+
+```bash
+sudo systemctl restart html-workbench
+```

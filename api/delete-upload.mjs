@@ -1,9 +1,13 @@
 import { error, json, methodNotAllowed } from "../lib/http.mjs";
+import { isAuthorizedRequest } from "../lib/auth.mjs";
 import { assertRecordId } from "../lib/records.mjs";
 import { deleteUpload, getRecord } from "../lib/storage.mjs";
 
 export async function DELETE(request) {
   try {
+    if (!isAuthorizedRequest(request)) {
+      return error("请先输入访问密码", 401);
+    }
     const id = new URL(request.url).searchParams.get("id");
     assertRecordId(id);
     const record = await getRecord(id);

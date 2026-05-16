@@ -19,6 +19,7 @@ const MIME_TYPES = new Map([
 loadLocalEnv();
 
 const API_MODULES = {
+  auth: pathToFileURL(path.join(ROOT_DIR, "api", "auth.mjs")).href,
   uploads: pathToFileURL(path.join(ROOT_DIR, "api", "uploads.mjs")).href,
   deleteUpload: pathToFileURL(path.join(ROOT_DIR, "api", "delete-upload.mjs")).href,
   view: pathToFileURL(path.join(ROOT_DIR, "api", "view.mjs")).href
@@ -135,6 +136,21 @@ async function callApiModule(moduleName, req, res, url) {
   await sendWebResponse(res, response);
 }
 
+async function isAuthorizedRequest(req) {
+  const auth = await import(pathToFileURL(path.join(ROOT_DIR, "lib", "auth.mjs")).href);
+  return auth.isAuthorizedCookie(req.headers.cookie || "");
+}
+
+function redirectToLogin(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const next = encodeURIComponent(`${url.pathname}${url.search}`);
+  res.writeHead(302, {
+    Location: `/login.html?next=${next}`,
+    "Cache-Control": "no-store"
+  });
+  res.end();
+}
+
 async function serveStatic(req, res, pathname) {
   const requestedPath = pathname === "/" ? "/index.html" : pathname;
   const filePath = safeResolve(PUBLIC_DIR, requestedPath);
@@ -163,6 +179,16 @@ async function serveStatic(req, res, pathname) {
 async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   const pathname = url.pathname;
+
+  if (pathname === "/api/auth") {
+    await callApiModule("auth", req, res, url);
+    return;
+  }
+
+  if ((pathname === "/" || pathname === "/index.html") && !(await isAuthorizedRequest(req))) {
+    redirectToLogin(req, res);
+    return;
+  }
 
   if (pathname === "/api/uploads") {
     await callApiModule("uploads", req, res, url);

@@ -1,9 +1,13 @@
 import { error, json, methodNotAllowed } from "../lib/http.mjs";
+import { isAuthorizedRequest } from "../lib/auth.mjs";
 import { assertHtmlFile, buildRecord, publicRecords } from "../lib/records.mjs";
 import { listRecords, saveRecord, saveUpload } from "../lib/storage.mjs";
 
-export async function GET() {
+export async function GET(request) {
   try {
+    if (!isAuthorizedRequest(request)) {
+      return error("请先输入访问密码", 401);
+    }
     const records = await listRecords();
     return json({ records: publicRecords(records) });
   } catch (requestError) {
@@ -13,6 +17,9 @@ export async function GET() {
 
 export async function POST(request) {
   try {
+    if (!isAuthorizedRequest(request)) {
+      return error("请先输入访问密码", 401);
+    }
     const form = await request.formData();
     const file = form.get("file");
     const originalName = assertHtmlFile(file);
