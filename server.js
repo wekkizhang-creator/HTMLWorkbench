@@ -205,6 +205,20 @@ async function start() {
 
   const port = await listenWithFallback(server, START_PORT);
   console.log(`HTML 发布台已启动: http://localhost:${port}`);
+
+  const shutdown = (signal) => {
+    console.log(`收到 ${signal}，正在关闭 HTML 发布台...`);
+    server.close((error) => {
+      if (error) {
+        console.error(error);
+        process.exit(1);
+      }
+      process.exit(0);
+    });
+  };
+
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 function listenWithFallback(server, startPort) {

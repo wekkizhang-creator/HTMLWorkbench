@@ -1,0 +1,16 @@
+services:
+  html-workbench:
+    build: .
+    container_name: html-workbench
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HTML_WORKBENCH_DATA_DIR: /data
+    ports:
+      - "3000:3000"
+    volumes:
+      - html-workbench-data:/data
+
+volumes:
+  html-workbench-data:

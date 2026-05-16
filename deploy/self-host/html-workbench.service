@@ -1,0 +1,23 @@
+[Unit]
+Description=HTMLWorkbench Node service
+After=network.target
+
+[Service]
+Type=simple
+User=htmlworkbench
+Group=htmlworkbench
+WorkingDirectory=/opt/html-workbench
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HTML_WORKBENCH_DATA_DIR=/var/lib/html-workbench
+EnvironmentFile=-/etc/html-workbench.env
+ExecStart=/usr/bin/node /opt/html-workbench/server.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/html-workbench
+
+[Install]
+WantedBy=multi-user.target

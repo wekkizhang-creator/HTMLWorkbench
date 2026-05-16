@@ -35,3 +35,89 @@ npm run dev
 ```bash
 npm run check
 ```
+
+## 自有服务器部署
+
+这个分支可以直接部署到自己的云服务器。自托管时不需要 Vercel Blob，上传的 HTML 和记录会保存到服务器磁盘。建议把数据目录放在 `/var/lib/html-workbench`，代码目录放在 `/opt/html-workbench`。
+
+### 方式一：Node.js + systemd + Nginx
+
+服务器要求：
+
+- Ubuntu / Debian / CentOS 等 Linux 服务器
+- Node.js 20 或更新版本
+- Git
+- Nginx
+
+首次部署：
+
+```bash
+sudo mkdir -p /opt/html-workbench /var/lib/html-workbench
+sudo git clone --branch owncnd_codex/html https://github.com/wekkizhang-creator/HTMLWorkbench.git /opt/html-workbench
+cd /opt/html-workbench
+sudo npm install --omit=dev
+sudo useradd --system --home /opt/html-workbench --shell /usr/sbin/nologin htmlworkbench
+sudo chown -R htmlworkbench:htmlworkbench /var/lib/html-workbench
+sudo cp deploy/self-host/html-workbench.service /etc/systemd/system/html-workbench.service
+sudo cp deploy/self-host/html-workbench.env.example /etc/html-workbench.env
+sudo systemctl daemon-reload
+sudo systemctl enable html-workbench
+sudo systemctl start html-workbench
+```
+
+检查服务：
+
+```bash
+sudo systemctl status html-workbench
+curl http://127.0.0.1:3000
+```
+
+配置 Nginx：
+
+```bash
+sudo cp /opt/html-workbench/deploy/self-host/nginx.conf /etc/nginx/sites-available/html-workbench
+sudo ln -s /etc/nginx/sites-available/html-workbench /etc/nginx/sites-enabled/html-workbench
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+把 `/etc/nginx/sites-available/html-workbench` 里的 `server_name example.com;` 改成你的域名。如果暂时没有域名，可以改成服务器公网 IP。
+
+更新部署：
+
+```bash
+cd /opt/html-workbench
+sudo git fetch origin owncnd_codex/html
+sudo git checkout owncnd_codex/html
+sudo git reset --hard origin/owncnd_codex/html
+sudo npm install --omit=dev
+sudo systemctl restart html-workbench
+```
+
+也可以直接使用脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wekkizhang-creator/HTMLWorkbench/owncnd_codex/html/deploy/self-host/deploy.sh -o deploy.sh
+sudo bash deploy.sh
+```
+
+### 方式二：Docker Compose
+
+```bash
+git clone --branch owncnd_codex/html https://github.com/wekkizhang-creator/HTMLWorkbench.git
+cd HTMLWorkbench
+docker compose up -d --build
+```
+
+服务默认暴露在服务器 `3000` 端口。生产环境仍建议用 Nginx 反代到 `127.0.0.1:3000`，并配置 HTTPS。
+
+### 自托管环境变量
+
+可在 `/etc/html-workbench.env` 中调整：
+
+```bash
+PORT=3000
+HTML_WORKBENCH_DATA_DIR=/var/lib/html-workbench
+```
+
+`HTML_WORKBENCH_DATA_DIR` 是上传文件和记录的持久化目录。升级代码、重启服务、重新拉取 Git 分支都不会影响这个目录。
