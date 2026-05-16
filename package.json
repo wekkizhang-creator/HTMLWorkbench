@@ -1,0 +1,17 @@
+{
+  "name": "html-publish-desk",
+  "version": "1.0.0",
+  "description": "A lightweight HTML upload and link management website.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js"
+  },
+  "keywords": [
+    "html",
+    "upload",
+    "publisher"
+  ],
+  "author": "",
+  "license": "MIT"
+}
