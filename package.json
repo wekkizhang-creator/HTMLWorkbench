@@ -4,8 +4,9 @@
   "description": "A lightweight HTML upload and link management website.",
   "main": "server.js",
   "scripts": {
+    "dev": "node server.js",
     "start": "node server.js",
-    "check": "node --check server.js"
+    "check": "node scripts/check.mjs"
   },
   "keywords": [
     "html",
@@ -13,5 +14,11 @@
     "publisher"
   ],
   "author": "",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "@vercel/blob": "^2.3.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
 }

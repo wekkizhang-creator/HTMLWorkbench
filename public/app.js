@@ -4,6 +4,8 @@ const state = {
   latestRecord: null
 };
 
+const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+
 const elements = {
   clearButton: document.querySelector("#clearButton"),
   copyLatestButton: document.querySelector("#copyLatestButton"),
@@ -78,7 +80,7 @@ function setSelectedFile(file) {
 
   if (!state.selectedFile) {
     elements.fileName.textContent = "选择 HTML 文件";
-    elements.fileDetail.textContent = ".html / .htm，最大 10 MB";
+    elements.fileDetail.textContent = ".html / .htm，最大 4 MB";
     elements.uploadStatus.textContent = "待选择";
     elements.uploadStatus.classList.remove("ready");
     elements.fileInput.value = "";
@@ -237,6 +239,10 @@ function handleFiles(files) {
   const extension = file.name.split(".").pop().toLowerCase();
   if (extension !== "html" && extension !== "htm") {
     showToast("请选择 .html 或 .htm 文件");
+    return;
+  }
+  if (file.size > MAX_UPLOAD_BYTES) {
+    showToast("Vercel 函数上传限制为 4 MB");
     return;
   }
   setSelectedFile(file);
