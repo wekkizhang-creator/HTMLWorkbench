@@ -5,6 +5,7 @@ const files = [
   "public/app.js",
   "api/uploads.mjs",
   "api/delete-upload.mjs",
+  "api/download.mjs",
   "api/auth.mjs",
   "api/view.mjs",
   "lib/auth.mjs",

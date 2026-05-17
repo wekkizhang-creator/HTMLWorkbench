@@ -20,6 +20,7 @@ loadLocalEnv();
 
 const API_MODULES = {
   auth: pathToFileURL(path.join(ROOT_DIR, "api", "auth.mjs")).href,
+  download: pathToFileURL(path.join(ROOT_DIR, "api", "download.mjs")).href,
   uploads: pathToFileURL(path.join(ROOT_DIR, "api", "uploads.mjs")).href,
   deleteUpload: pathToFileURL(path.join(ROOT_DIR, "api", "delete-upload.mjs")).href,
   view: pathToFileURL(path.join(ROOT_DIR, "api", "view.mjs")).href
@@ -182,6 +183,11 @@ async function route(req, res) {
 
   if (pathname === "/api/auth") {
     await callApiModule("auth", req, res, url);
+    return;
+  }
+
+  if (pathname === "/api/download") {
+    await callApiModule("download", req, res, url);
     return;
   }
 
