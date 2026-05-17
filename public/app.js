@@ -51,6 +51,7 @@ function icon(name) {
   const icons = {
     copy: '<rect x="8" y="8" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h9a1 1 0 0 1 1 1v1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
     external: '<path d="M14 4h6v6M10 14 20 4M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
+    replace: '<path d="M17 3v5h-5M7 21v-5h5M17 8a7 7 0 0 0-11.6-2.7M7 16a7 7 0 0 0 11.6 2.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
     trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 14h10l1-14M9 7l1-4h4l1 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>'
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`;
@@ -277,6 +278,7 @@ function renderRecords() {
         <div class="row-actions">
           <button class="button secondary" type="button" data-action="copy" data-url="${link}">${icon("copy")}复制</button>
           <a class="button secondary" href="${link}" target="_blank" rel="noopener">${icon("external")}打开</a>
+          <button class="button secondary" type="button" data-action="replace">${icon("replace")}替换</button>
           <button class="button secondary danger" type="button" data-action="delete">${icon("trash")}删除</button>
         </div>
       </td>
@@ -381,22 +383,96 @@ async function deleteRecord(id) {
   showToast("记录已删除");
 }
 
-function handleFiles(files) {
-  const file = files && files[0];
+function validateHtmlFile(file) {
   if (!file) {
-    return;
+    return false;
   }
 
   const extension = file.name.split(".").pop().toLowerCase();
   if (extension !== "html" && extension !== "htm") {
     showToast("请选择 .html 或 .htm 文件");
-    return;
+    return false;
   }
   if (file.size > MAX_UPLOAD_BYTES) {
     showToast("上传限制为 4 MB");
+    return false;
+  }
+  return true;
+}
+
+function handleFiles(files) {
+  const file = files && files[0];
+  if (!validateHtmlFile(file)) {
     return;
   }
   setSelectedFile(file);
+}
+
+function chooseReplacementFile() {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    let settled = false;
+    const resolveOnce = (file) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      window.removeEventListener("focus", handleFocus);
+      input.remove();
+      resolve(file);
+    };
+    const handleFocus = () => {
+      window.setTimeout(() => {
+        if (!input.files || input.files.length === 0) {
+          resolveOnce(null);
+        }
+      }, 250);
+    };
+    input.type = "file";
+    input.accept = ".html,.htm,text/html";
+    input.hidden = true;
+    input.addEventListener("change", () => {
+      const file = input.files && input.files[0] ? input.files[0] : null;
+      resolveOnce(file);
+    }, { once: true });
+    window.addEventListener("focus", handleFocus);
+    document.body.appendChild(input);
+    input.click();
+  });
+}
+
+async function replaceRecord(id, button) {
+  const record = state.records.find((item) => item.id === id);
+  if (!record) {
+    return;
+  }
+
+  const file = await chooseReplacementFile();
+  if (!validateHtmlFile(file)) {
+    return;
+  }
+  if (!window.confirm(`用 ${file.name} 替换 ${record.originalName}？访问链接会保持不变。`)) {
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", file);
+  const previousHtml = button.innerHTML;
+  button.disabled = true;
+  button.textContent = "替换中";
+  try {
+    const payload = await api(`/api/uploads/${id}`, {
+      method: "PUT",
+      body: formData
+    });
+    state.records = [payload.record, ...state.records.filter((item) => item.id !== id)];
+    renderRecords();
+    setLatestRecord(payload.record);
+    showToast("HTML 文件已替换，访问链接保持不变");
+  } finally {
+    button.disabled = false;
+    button.innerHTML = previousHtml;
+  }
 }
 
 elements.fileInput.addEventListener("change", () => {
@@ -477,6 +553,9 @@ elements.recordBody.addEventListener("click", async (event) => {
     }
     if (action === "delete") {
       await deleteRecord(row.dataset.id);
+    }
+    if (action === "replace") {
+      await replaceRecord(row.dataset.id, button);
     }
     if (action === "filter-tag") {
       state.activeTag = button.dataset.tag || "";
