@@ -281,8 +281,12 @@ h1 {
 
 .upload-meta-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
+}
+
+.upload-meta-grid.custom-type-visible {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
 .field-control,
@@ -293,6 +297,10 @@ h1 {
   color: var(--muted);
   font-size: 12px;
   font-weight: 650;
+}
+
+.field-control[hidden] {
+  display: none;
 }
 
 .field-control select,

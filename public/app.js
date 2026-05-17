@@ -102,7 +102,9 @@ function getDocumentTypes() {
 
 function setCustomTypeVisible(shouldFocus = false) {
   const isCustom = elements.documentTypeSelect.value === "__custom";
-  elements.documentTypeCustom.closest(".field-control").hidden = !isCustom;
+  const customField = elements.documentTypeCustom.closest(".field-control");
+  customField.hidden = !isCustom;
+  customField.closest(".upload-meta-grid").classList.toggle("custom-type-visible", isCustom);
   if (isCustom && shouldFocus) {
     elements.documentTypeCustom.focus();
   }
