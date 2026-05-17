@@ -1,6 +1,6 @@
 import { error, json, methodNotAllowed } from "../lib/http.mjs";
 import { isAuthorizedRequest } from "../lib/auth.mjs";
-import { assertHtmlFile, buildRecord, publicRecords } from "../lib/records.mjs";
+import { assertHtmlFile, buildRecord, normalizeDocumentType, publicRecords } from "../lib/records.mjs";
 import { listRecords, saveRecord, saveUpload } from "../lib/storage.mjs";
 
 export async function GET(request) {
@@ -22,12 +22,14 @@ export async function POST(request) {
     }
     const form = await request.formData();
     const file = form.get("file");
+    const documentType = normalizeDocumentType(form.get("documentType"));
     const originalName = assertHtmlFile(file);
     const arrayBuffer = await file.arrayBuffer();
     const fileBuffer = Buffer.from(arrayBuffer);
     const temporaryRecord = buildRecord({
       fileBuffer,
       originalName,
+      documentType,
       uploadBlob: {
         pathname: "",
         url: ""

@@ -1,4 +1,5 @@
 const state = {
+  activeDocumentType: "",
   activeTag: "",
   records: [],
   searchQuery: "",
@@ -7,10 +8,14 @@ const state = {
 };
 
 const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+const DEFAULT_DOCUMENT_TYPE = "其他";
+const BASE_DOCUMENT_TYPES = ["分析报告", "原型", "其他"];
 
 const elements = {
   clearButton: document.querySelector("#clearButton"),
   copyLatestButton: document.querySelector("#copyLatestButton"),
+  documentTypeCustom: document.querySelector("#documentTypeCustom"),
+  documentTypeSelect: document.querySelector("#documentTypeSelect"),
   dropzone: document.querySelector("#dropzone"),
   emptyState: document.querySelector("#emptyState"),
   emptyText: document.querySelector("#emptyText"),
@@ -29,6 +34,7 @@ const elements = {
   tagFilter: document.querySelector("#tagFilter"),
   toast: document.querySelector("#toast"),
   totalCount: document.querySelector("#totalCount"),
+  typeFilter: document.querySelector("#typeFilter"),
   uploadButton: document.querySelector("#uploadButton"),
   uploadForm: document.querySelector("#uploadForm"),
   uploadStatus: document.querySelector("#uploadStatus")
@@ -69,6 +75,68 @@ function formatDate(value) {
     return "--";
   }
   return dateFormatter.format(new Date(value));
+}
+
+function normalizeDocumentType(value) {
+  const normalized = String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 24);
+  return normalized || DEFAULT_DOCUMENT_TYPE;
+}
+
+function getDocumentTypes() {
+  const seen = new Set();
+  const types = [];
+  for (const type of [
+    ...BASE_DOCUMENT_TYPES,
+    ...state.records.map((record) => record.documentType)
+  ]) {
+    const normalized = normalizeDocumentType(type);
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    types.push(normalized);
+  }
+  return types;
+}
+
+function setCustomTypeVisible(shouldFocus = false) {
+  const isCustom = elements.documentTypeSelect.value === "__custom";
+  elements.documentTypeCustom.closest(".field-control").hidden = !isCustom;
+  if (isCustom && shouldFocus) {
+    elements.documentTypeCustom.focus();
+  }
+}
+
+function getSelectedDocumentType() {
+  if (elements.documentTypeSelect.value === "__custom") {
+    return normalizeDocumentType(elements.documentTypeCustom.value);
+  }
+  return normalizeDocumentType(elements.documentTypeSelect.value);
+}
+
+function renderDocumentTypeOptions() {
+  const types = getDocumentTypes();
+  const uploadSelection = elements.documentTypeSelect.value;
+  const customSelected = uploadSelection === "__custom";
+
+  if (state.activeDocumentType && !types.includes(state.activeDocumentType)) {
+    state.activeDocumentType = "";
+  }
+
+  elements.documentTypeSelect.innerHTML = [
+    ...types.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`),
+    '<option value="__custom">新建类型</option>'
+  ].join("");
+  elements.documentTypeSelect.value = customSelected || !types.includes(uploadSelection)
+    ? customSelected ? "__custom" : DEFAULT_DOCUMENT_TYPE
+    : uploadSelection;
+  setCustomTypeVisible();
+
+  elements.typeFilter.innerHTML = [
+    '<option value="">全部类型</option>',
+    ...types.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`)
+  ].join("");
+  elements.typeFilter.value = state.activeDocumentType;
 }
 
 function showToast(message) {
@@ -144,6 +212,11 @@ function renderTagFilter() {
 function getFilteredRecords() {
   const query = state.searchQuery.trim().toLowerCase();
   return state.records.filter((record) => {
+    const documentType = normalizeDocumentType(record.documentType);
+    const matchesDocumentType = !state.activeDocumentType || documentType === state.activeDocumentType;
+    if (!matchesDocumentType) {
+      return false;
+    }
     const matchesTag = !state.activeTag || (record.tags || []).includes(state.activeTag);
     if (!matchesTag) {
       return false;
@@ -154,6 +227,7 @@ function getFilteredRecords() {
     const searchable = [
       record.title,
       record.description,
+      documentType,
       record.originalName,
       ...(record.tags || [])
     ].join(" ").toLowerCase();
@@ -162,6 +236,7 @@ function getFilteredRecords() {
 }
 
 function renderRecords() {
+  renderDocumentTypeOptions();
   const filteredRecords = getFilteredRecords();
   elements.recordBody.innerHTML = "";
   elements.emptyState.classList.toggle("visible", filteredRecords.length === 0);
@@ -183,6 +258,9 @@ function renderRecords() {
           <strong>${escapeHtml(record.title || record.originalName)}</strong>
           <span>${escapeHtml(record.description || "暂无描述")}</span>
         </div>
+      </td>
+      <td>
+        <span class="type-badge">${escapeHtml(normalizeDocumentType(record.documentType))}</span>
       </td>
       <td>
         <div class="tag-list">${renderRecordTags(record.tags || [])}</div>
@@ -212,10 +290,11 @@ function renderRecords() {
 }
 
 function renderRecordTags(tags) {
-  if (!tags.length) {
+  const visibleTags = tags.slice(0, 3);
+  if (!visibleTags.length) {
     return '<span class="tag-empty">无标签</span>';
   }
-  return tags.map((tag) => `<button class="tag-mini" type="button" data-action="filter-tag" data-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>`).join("");
+  return visibleTags.map((tag) => `<button class="tag-mini" type="button" data-action="filter-tag" data-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>`).join("");
 }
 
 function escapeHtml(value) {
@@ -253,6 +332,7 @@ async function uploadSelectedFile() {
 
   const formData = new FormData();
   formData.append("file", state.selectedFile);
+  formData.append("documentType", getSelectedDocumentType());
   elements.uploadButton.disabled = true;
   elements.uploadButton.textContent = "发布中";
 
@@ -359,8 +439,17 @@ elements.logoutButton.addEventListener("click", async () => {
   redirectToLogin();
 });
 
+elements.documentTypeSelect.addEventListener("change", () => {
+  setCustomTypeVisible(true);
+});
+
 elements.searchInput.addEventListener("input", () => {
   state.searchQuery = elements.searchInput.value;
+  renderRecords();
+});
+
+elements.typeFilter.addEventListener("change", () => {
+  state.activeDocumentType = elements.typeFilter.value;
   renderRecords();
 });
 
