@@ -136,3 +136,33 @@ HTML_WORKBENCH_AUTH_SECRET=换成一串随机字符
 ```bash
 sudo systemctl restart html-workbench
 ```
+
+### GitHub Actions 自动部署
+
+仓库包含 `.github/workflows/deploy-self-host.yml`。配置好 GitHub Secrets 后，每次推送 `owncnd_codex/html` 分支都会自动连接服务器、拉取最新代码并重启 `html-workbench`。
+
+在 GitHub 仓库进入 `Settings` -> `Secrets and variables` -> `Actions`，新增这些 Repository secrets：
+
+```text
+SERVER_HOST=163.7.4.158
+SERVER_USER=root
+SERVER_PORT=22
+SERVER_SSH_KEY=你的 SSH 私钥内容
+```
+
+`SERVER_PORT` 可选，不填默认 `22`。如果不用 root，请确保 `SERVER_USER` 对应用户可以免密执行 `sudo systemctl restart html-workbench` 等部署命令。
+
+建议单独创建一组部署密钥，把公钥加入服务器用户的 `~/.ssh/authorized_keys`，再把私钥内容放到 `SERVER_SSH_KEY`：
+
+```bash
+ssh-keygen -t ed25519 -f htmlworkbench_deploy_key -C github-actions-htmlworkbench
+ssh-copy-id -i htmlworkbench_deploy_key.pub root@163.7.4.158
+```
+
+工作流也支持这些 Repository variables，可不填：
+
+```text
+SERVER_APP_DIR=/opt/html-workbench
+SERVER_BRANCH=owncnd_codex/html
+SERVER_REPO_URL=https://github.com/wekkizhang-creator/HTMLWorkbench.git
+```
