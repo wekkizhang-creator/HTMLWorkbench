@@ -247,33 +247,33 @@ function renderRecords() {
     const row = document.createElement("tr");
     row.dataset.id = record.id;
     row.innerHTML = `
-      <td>
+      <td data-label="文件">
         <div class="file-stack">
           <strong title="${escapeHtml(record.originalName)}">${escapeHtml(record.originalName)}</strong>
           <span>${record.id.slice(0, 8)}</span>
         </div>
       </td>
-      <td>
+      <td data-label="标题与描述">
         <div class="description-stack">
           <strong>${escapeHtml(record.title || record.originalName)}</strong>
           <span>${escapeHtml(record.description || "暂无描述")}</span>
         </div>
       </td>
-      <td>
+      <td data-label="文档类型">
         <span class="type-badge">${escapeHtml(normalizeDocumentType(record.documentType))}</span>
       </td>
-      <td>
+      <td data-label="标签">
         <div class="tag-list">${renderRecordTags(record.tags || [])}</div>
       </td>
-      <td>${formatDate(record.uploadedAt)}</td>
-      <td>${formatBytes(record.size || 0)}</td>
-      <td>
+      <td data-label="上传时间">${formatDate(record.uploadedAt)}</td>
+      <td data-label="大小">${formatBytes(record.size || 0)}</td>
+      <td data-label="访问链接">
         <div class="link-stack">
           <a href="${link}" target="_blank" rel="noopener" title="${link}">${link}</a>
           <span>${escapeHtml(record.url)}</span>
         </div>
       </td>
-      <td>
+      <td data-label="操作">
         <div class="row-actions">
           <button class="button secondary" type="button" data-action="copy" data-url="${link}">${icon("copy")}复制</button>
           <a class="button secondary" href="${link}" target="_blank" rel="noopener">${icon("external")}打开</a>
