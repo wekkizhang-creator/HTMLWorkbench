@@ -52,6 +52,7 @@ function icon(name) {
     copy: '<rect x="8" y="8" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h9a1 1 0 0 1 1 1v1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
     external: '<path d="M14 4h6v6M10 14 20 4M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
     replace: '<path d="M17 3v5h-5M7 21v-5h5M17 8a7 7 0 0 0-11.6-2.7M7 16a7 7 0 0 0 11.6 2.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
+    rollback: '<path d="M9 14 4 9l5-5M5 9h8a7 7 0 1 1-5.3 11.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
     trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 14h10l1-14M9 7l1-4h4l1 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>'
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`;
@@ -170,8 +171,8 @@ function setSelectedFile(file) {
   elements.uploadButton.disabled = !state.selectedFile;
 
   if (!state.selectedFile) {
-    elements.fileName.textContent = "选择 HTML 文件";
-    elements.fileDetail.textContent = ".html / .htm，最大 4 MB";
+    elements.fileName.textContent = "选择 HTML 或 ZIP 文件";
+    elements.fileDetail.textContent = ".html / .htm / .zip，最大 4 MB";
     elements.uploadStatus.textContent = "待选择";
     elements.uploadStatus.classList.remove("ready");
     elements.fileInput.value = "";
@@ -253,7 +254,7 @@ function renderRecords() {
       <td data-label="文件">
         <div class="file-stack">
           <strong title="${escapeHtml(record.originalName)}">${escapeHtml(record.originalName)}</strong>
-          <span>${record.id.slice(0, 8)}</span>
+          <span>${record.id.slice(0, 8)} · ${(record.uploadKind || "html").toUpperCase()}</span>
         </div>
       </td>
       <td data-label="标题与描述">
@@ -281,6 +282,7 @@ function renderRecords() {
           <button class="button secondary" type="button" data-action="copy" data-url="${link}">${icon("copy")}复制</button>
           <a class="button secondary" href="${link}" target="_blank" rel="noopener">${icon("external")}打开</a>
           <button class="button secondary" type="button" data-action="replace">${icon("replace")}替换</button>
+          <button class="button secondary" type="button" data-action="rollback" ${record.hasPreviousVersion ? "" : "disabled"}>${icon("rollback")}回滚</button>
           <button class="button secondary danger" type="button" data-action="delete">${icon("trash")}删除</button>
         </div>
       </td>
@@ -349,7 +351,7 @@ async function uploadSelectedFile() {
     setSelectedFile(null);
     renderRecords();
     setLatestRecord(payload.record);
-    showToast("HTML 链接已生成，描述和标签已自动补全");
+    showToast("发布链接已生成，描述和标签已自动补全");
   } finally {
     elements.uploadButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0-12 4 4m-4-4-4 4M5 15v4h14v-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>发布';
     elements.uploadButton.disabled = !state.selectedFile;
@@ -391,8 +393,8 @@ function validateHtmlFile(file) {
   }
 
   const extension = file.name.split(".").pop().toLowerCase();
-  if (extension !== "html" && extension !== "htm") {
-    showToast("请选择 .html 或 .htm 文件");
+  if (!["html", "htm", "zip"].includes(extension)) {
+    showToast("请选择 .html、.htm 或 .zip 文件");
     return false;
   }
   if (file.size > MAX_UPLOAD_BYTES) {
@@ -431,7 +433,7 @@ function chooseReplacementFile() {
       }, 250);
     };
     input.type = "file";
-    input.accept = ".html,.htm,text/html";
+    input.accept = ".html,.htm,.zip,text/html,application/zip,application/x-zip-compressed";
     input.hidden = true;
     input.addEventListener("change", () => {
       const file = input.files && input.files[0] ? input.files[0] : null;
@@ -470,7 +472,34 @@ async function replaceRecord(id, button) {
     state.records = [payload.record, ...state.records.filter((item) => item.id !== id)];
     renderRecords();
     setLatestRecord(payload.record);
-    showToast("HTML 文件已替换，访问链接保持不变");
+    showToast("文件已替换，访问链接保持不变，可回滚到上一版本");
+  } finally {
+    button.disabled = false;
+    button.innerHTML = previousHtml;
+  }
+}
+
+async function rollbackRecord(id, button) {
+  const record = state.records.find((item) => item.id === id);
+  if (!record || !record.hasPreviousVersion) {
+    showToast("当前记录没有可回滚版本");
+    return;
+  }
+  if (!window.confirm(`回滚 ${record.originalName} 到上一次文件版本？`)) {
+    return;
+  }
+
+  const previousHtml = button.innerHTML;
+  button.disabled = true;
+  button.textContent = "回滚中";
+  try {
+    const payload = await api(`/api/uploads/${id}`, {
+      method: "PATCH"
+    });
+    state.records = [payload.record, ...state.records.filter((item) => item.id !== id)];
+    renderRecords();
+    setLatestRecord(payload.record);
+    showToast("已回滚到上一版本");
   } finally {
     button.disabled = false;
     button.innerHTML = previousHtml;
@@ -558,6 +587,9 @@ elements.recordBody.addEventListener("click", async (event) => {
     }
     if (action === "replace") {
       await replaceRecord(row.dataset.id, button);
+    }
+    if (action === "rollback") {
+      await rollbackRecord(row.dataset.id, button);
     }
     if (action === "filter-tag") {
       state.activeTag = button.dataset.tag || "";

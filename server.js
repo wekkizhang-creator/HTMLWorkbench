@@ -209,10 +209,13 @@ async function route(req, res) {
     return;
   }
 
-  const viewMatch = pathname.match(/^\/view\/([0-9a-f-]{36})$/i);
+  const viewMatch = pathname.match(/^\/view\/([0-9a-f-]{36})(?:\/(.*))?$/i);
   if (viewMatch) {
     url.pathname = "/api/view";
     url.searchParams.set("id", viewMatch[1]);
+    if (viewMatch[2]) {
+      url.searchParams.set("path", viewMatch[2]);
+    }
     await callApiModule("view", req, res, url);
     return;
   }

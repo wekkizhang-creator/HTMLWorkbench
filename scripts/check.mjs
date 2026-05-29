@@ -13,6 +13,7 @@ const files = [
   "lib/http.mjs",
   "lib/records.mjs",
   "lib/storage.mjs",
+  "lib/zip.mjs",
   "scripts/check.mjs"
 ];
 

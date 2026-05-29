@@ -1,7 +1,7 @@
 import { verifyPassword } from "../lib/auth.mjs";
 import { error } from "../lib/http.mjs";
 import { assertRecordId, getSafeFileName } from "../lib/records.mjs";
-import { getRecord, getUploadContent } from "../lib/storage.mjs";
+import { getDownloadContent, getRecord } from "../lib/storage.mjs";
 
 export async function POST(request) {
   try {
@@ -18,16 +18,17 @@ export async function POST(request) {
       return error("上传记录不存在", 404);
     }
 
-    const upload = await getUploadContent(record);
+    const upload = await getDownloadContent(record);
     if (!upload) {
-      return error("HTML 文件已丢失", 404);
+      return error("上传文件已丢失", 404);
     }
 
-    const fileName = getSafeFileName(record.originalName || `${record.id}.html`);
+    const defaultName = record.uploadKind === "zip" ? `${record.id}.zip` : `${record.id}.html`;
+    const fileName = getSafeFileName(record.originalName || defaultName);
     const headers = {
       "Cache-Control": "no-store",
       "Content-Disposition": buildContentDisposition(fileName),
-      "Content-Type": "text/html; charset=utf-8",
+      "Content-Type": upload.contentType || "application/octet-stream",
       "X-Content-Type-Options": "nosniff"
     };
     if (upload.contentLength) {
