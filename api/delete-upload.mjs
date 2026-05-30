@@ -53,6 +53,7 @@ export async function PUT(request) {
 
     const form = await request.formData();
     const file = form.get("file");
+    const title = form.get("title");
     const originalName = assertUploadFile(file);
     const arrayBuffer = await file.arrayBuffer();
     const fileBuffer = Buffer.from(arrayBuffer);
@@ -72,6 +73,7 @@ export async function PUT(request) {
         record: recordWithPrevious,
         indexBuffer: packageData.indexHtml,
         originalName,
+        title,
         packageBlob,
         siteFiles,
         sourceSize: fileBuffer.length
@@ -82,6 +84,7 @@ export async function PUT(request) {
         record: recordWithPrevious,
         fileBuffer,
         originalName,
+        title,
         uploadBlob
       });
     }

@@ -63,6 +63,10 @@
             </label>
 
             <div class="upload-meta-grid">
+              <label class="field-control" for="titleInput">
+                <span>标题</span>
+                <input id="titleInput" name="title" type="text" maxlength="120" autocomplete="off" placeholder="可选：不填则自动识别">
+              </label>
               <label class="field-control" for="documentTypeSelect">
                 <span>文档类型</span>
                 <select id="documentTypeSelect" name="documentType">
@@ -144,7 +148,6 @@
                 <option value="">全部类型</option>
               </select>
             </label>
-            <div class="tag-filter" id="tagFilter" aria-label="标签筛选"></div>
           </div>
 
           <div class="table-frame">
@@ -154,7 +157,6 @@
                   <th>文件</th>
                   <th>标题与描述</th>
                   <th>文档类型</th>
-                  <th>标签</th>
                   <th>上传时间</th>
                   <th>大小</th>
                   <th>访问链接</th>

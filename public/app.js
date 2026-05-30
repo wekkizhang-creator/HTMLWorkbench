@@ -1,6 +1,5 @@
 const state = {
   activeDocumentType: "",
-  activeTag: "",
   records: [],
   searchQuery: "",
   selectedFile: null,
@@ -31,7 +30,7 @@ const elements = {
   recordBody: document.querySelector("#recordBody"),
   refreshButton: document.querySelector("#refreshButton"),
   searchInput: document.querySelector("#searchInput"),
-  tagFilter: document.querySelector("#tagFilter"),
+  titleInput: document.querySelector("#titleInput"),
   toast: document.querySelector("#toast"),
   totalCount: document.querySelector("#totalCount"),
   typeFilter: document.querySelector("#typeFilter"),
@@ -204,25 +203,12 @@ function renderStats() {
   elements.originText.textContent = window.location.origin;
 }
 
-function renderTagFilter() {
-  const tags = Array.from(new Set(state.records.flatMap((record) => record.tags || []))).sort((a, b) => a.localeCompare(b, "zh-CN"));
-  const buttons = [
-    `<button class="tag-chip ${state.activeTag ? "" : "active"}" type="button" data-tag="">全部</button>`,
-    ...tags.map((tag) => `<button class="tag-chip ${state.activeTag === tag ? "active" : ""}" type="button" data-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>`)
-  ];
-  elements.tagFilter.innerHTML = buttons.join("");
-}
-
 function getFilteredRecords() {
   const query = state.searchQuery.trim().toLowerCase();
   return state.records.filter((record) => {
     const documentType = normalizeDocumentType(record.documentType);
     const matchesDocumentType = !state.activeDocumentType || documentType === state.activeDocumentType;
     if (!matchesDocumentType) {
-      return false;
-    }
-    const matchesTag = !state.activeTag || (record.tags || []).includes(state.activeTag);
-    if (!matchesTag) {
       return false;
     }
     if (!query) {
@@ -232,8 +218,7 @@ function getFilteredRecords() {
       record.title,
       record.description,
       documentType,
-      record.originalName,
-      ...(record.tags || [])
+      record.originalName
     ].join(" ").toLowerCase();
     return searchable.includes(query);
   });
@@ -266,9 +251,6 @@ function renderRecords() {
       <td data-label="文档类型">
         <span class="type-badge">${escapeHtml(normalizeDocumentType(record.documentType))}</span>
       </td>
-      <td data-label="标签">
-        <div class="tag-list">${renderRecordTags(record.tags || [])}</div>
-      </td>
       <td data-label="上传时间">${formatDate(record.uploadedAt)}</td>
       <td data-label="大小">${formatBytes(record.size || 0)}</td>
       <td data-label="访问链接">
@@ -291,16 +273,7 @@ function renderRecords() {
   }
 
   renderStats();
-  renderTagFilter();
   setLatestRecord(state.records[0] || null);
-}
-
-function renderRecordTags(tags) {
-  const visibleTags = tags.slice(0, 3);
-  if (!visibleTags.length) {
-    return '<span class="tag-empty">无标签</span>';
-  }
-  return visibleTags.map((tag) => `<button class="tag-mini" type="button" data-action="filter-tag" data-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>`).join("");
 }
 
 function escapeHtml(value) {
@@ -339,6 +312,7 @@ async function uploadSelectedFile() {
   const formData = new FormData();
   formData.append("file", state.selectedFile);
   formData.append("documentType", getSelectedDocumentType());
+  formData.append("title", elements.titleInput.value);
   elements.uploadButton.disabled = true;
   elements.uploadButton.textContent = "发布中";
 
@@ -348,10 +322,11 @@ async function uploadSelectedFile() {
       body: formData
     });
     state.records = [payload.record, ...state.records];
+    elements.titleInput.value = "";
     setSelectedFile(null);
     renderRecords();
     setLatestRecord(payload.record);
-    showToast("发布链接已生成，描述和标签已自动补全");
+    showToast("发布链接已生成，描述已自动补全");
   } finally {
     elements.uploadButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0-12 4 4m-4-4-4 4M5 15v4h14v-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>发布';
     elements.uploadButton.disabled = !state.selectedFile;
@@ -458,9 +433,14 @@ async function replaceRecord(id, button) {
   if (!window.confirm(`用 ${file.name} 替换 ${record.originalName}？访问链接会保持不变。`)) {
     return;
   }
+  const title = window.prompt("输入新标题（留空则自动识别）", "");
+  if (title === null) {
+    return;
+  }
 
   const formData = new FormData();
   formData.append("file", file);
+  formData.append("title", title);
   const previousHtml = button.innerHTML;
   button.disabled = true;
   button.textContent = "替换中";
@@ -521,6 +501,7 @@ elements.uploadForm.addEventListener("submit", async (event) => {
 });
 
 elements.clearButton.addEventListener("click", () => {
+  elements.titleInput.value = "";
   setSelectedFile(null);
 });
 
@@ -560,15 +541,6 @@ elements.typeFilter.addEventListener("change", () => {
   renderRecords();
 });
 
-elements.tagFilter.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-tag]");
-  if (!button) {
-    return;
-  }
-  state.activeTag = button.dataset.tag || "";
-  renderRecords();
-});
-
 elements.recordBody.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) {
@@ -590,10 +562,6 @@ elements.recordBody.addEventListener("click", async (event) => {
     }
     if (action === "rollback") {
       await rollbackRecord(row.dataset.id, button);
-    }
-    if (action === "filter-tag") {
-      state.activeTag = button.dataset.tag || "";
-      renderRecords();
     }
   } catch (error) {
     showToast(error.message);

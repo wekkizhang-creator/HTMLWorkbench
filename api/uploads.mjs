@@ -31,6 +31,7 @@ export async function POST(request) {
     const form = await request.formData();
     const file = form.get("file");
     const documentType = normalizeDocumentType(form.get("documentType"));
+    const title = form.get("title");
     const originalName = assertUploadFile(file);
     const arrayBuffer = await file.arrayBuffer();
     const fileBuffer = Buffer.from(arrayBuffer);
@@ -41,6 +42,7 @@ export async function POST(request) {
         documentType,
         indexBuffer: packageData.indexHtml,
         originalName,
+        title,
         packageBlob: {
           pathname: "",
           url: ""
@@ -66,6 +68,7 @@ export async function POST(request) {
       fileBuffer,
       originalName,
       documentType,
+      title,
       uploadBlob: {
         pathname: "",
         url: ""
