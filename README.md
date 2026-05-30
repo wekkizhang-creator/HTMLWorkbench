@@ -30,7 +30,7 @@ npm run dev
 - Serverless Functions 放在 `api/`。
 - `/view/:id` 通过 `vercel.json` rewrite 到 `/api/view?id=:id`。
 - 上传文件和记录都使用 Vercel Blob 持久化。
-- Vercel Function 请求体限制为 4.5 MB，因此页面限制上传文件最大 4 MB。
+- 自托管部署支持上传文件最大 30 MB；如果部署到 Vercel，需要注意 Serverless Function 请求体限制通常不适合 30 MB 直传。
 
 ## 校验
 

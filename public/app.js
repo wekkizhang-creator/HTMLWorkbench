@@ -6,7 +6,7 @@ const state = {
   latestRecord: null
 };
 
-const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 30 * 1024 * 1024;
 const DEFAULT_DOCUMENT_TYPE = "其他";
 const BASE_DOCUMENT_TYPES = ["分析报告", "原型", "其他"];
 
@@ -171,7 +171,7 @@ function setSelectedFile(file) {
 
   if (!state.selectedFile) {
     elements.fileName.textContent = "选择 HTML 或 ZIP 文件";
-    elements.fileDetail.textContent = ".html / .htm / .zip，最大 4 MB";
+    elements.fileDetail.textContent = ".html / .htm / .zip，最大 30 MB";
     elements.uploadStatus.textContent = "待选择";
     elements.uploadStatus.classList.remove("ready");
     elements.fileInput.value = "";
@@ -373,7 +373,7 @@ function validateHtmlFile(file) {
     return false;
   }
   if (file.size > MAX_UPLOAD_BYTES) {
-    showToast("上传限制为 4 MB");
+    showToast("上传限制为 30 MB");
     return false;
   }
   return true;
