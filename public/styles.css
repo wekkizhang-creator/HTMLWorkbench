@@ -482,7 +482,8 @@ h1 {
 
 .table-frame {
   position: relative;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--paper-strong);
@@ -490,23 +491,24 @@ h1 {
 
 table {
   width: 100%;
+  min-width: 1480px;
   border-collapse: collapse;
   table-layout: fixed;
 }
 
 th:nth-child(1),
 td:nth-child(1) {
-  width: 14%;
+  width: 12%;
 }
 
 th:nth-child(2),
 td:nth-child(2) {
-  width: 25%;
+  width: 20%;
 }
 
 th:nth-child(3),
 td:nth-child(3) {
-  width: 11%;
+  width: 9%;
 }
 
 th:nth-child(4),
@@ -516,17 +518,17 @@ td:nth-child(4) {
 
 th:nth-child(5),
 td:nth-child(5) {
-  width: 8%;
+  width: 7%;
 }
 
 th:nth-child(6),
 td:nth-child(6) {
-  width: 20%;
+  width: 18%;
 }
 
 th:nth-child(7),
 td:nth-child(7) {
-  width: 12%;
+  width: 24%;
 }
 
 th,
@@ -611,13 +613,13 @@ tr:last-child td {
 .row-actions {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-wrap: nowrap;
+  gap: 6px;
 }
 
 .row-actions .button {
   min-height: 34px;
-  padding: 0 10px;
+  padding: 0 9px;
   font-size: 13px;
   flex: 0 0 auto;
 }
@@ -757,6 +759,7 @@ tr:last-child td {
 
   table {
     table-layout: auto;
+    min-width: 0;
   }
 
   thead {
@@ -805,6 +808,7 @@ tr:last-child td {
 
   .row-actions {
     justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .row-actions .button {
