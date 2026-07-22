@@ -707,6 +707,14 @@ tr:last-child td {
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .loading-spinner,
+  .icon-button.is-loading svg,
+  .loading-lines i {
+    animation: none;
+  }
+}
+
 .empty-state svg {
   width: 42px;
   height: 42px;

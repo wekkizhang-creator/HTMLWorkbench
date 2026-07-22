@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -48,6 +49,22 @@ async function withServer(run, { args = ["server.js"], startupTimeoutMs = 5000 }
   }
 }
 
+function request(origin, pathname, { headers = {}, method = "GET" } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(`${origin}${pathname}`, { headers, method }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve({
+        body: Buffer.concat(chunks),
+        headers: res.headers,
+        status: res.statusCode
+      }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 test("withServer stops a child when startup times out", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "html-workbench-test-"));
   const pidFile = path.join(tempDir, "child.pid");
@@ -70,32 +87,122 @@ test("withServer stops a child when startup times out", async () => {
   }
 });
 
-test("static text assets support gzip and conditional requests", async () => {
+test("Accept-Encoding quality values select a supported representation", async () => {
   await withServer(async (origin) => {
-    const first = await fetch(`${origin}/styles.css`, {
-      headers: { "Accept-Encoding": "gzip" }
+    const gzip = await request(origin, "/styles.css", {
+      headers: { "Accept-Encoding": "gzip;q=1" }
     });
-    assert.equal(first.status, 200);
-    assert.equal(first.headers.get("content-encoding"), "gzip");
-    assert.match(first.headers.get("cache-control") || "", /max-age=/);
-    assert.equal(first.headers.get("vary"), "Accept-Encoding");
-    const etag = first.headers.get("etag");
-    assert.ok(etag);
-    assert.match(await first.text(), /:root/);
+    assert.equal(gzip.status, 200);
+    assert.equal(gzip.headers["content-encoding"], "gzip");
+    assert.ok(gzip.body.length > 0);
 
-    const cached = await fetch(`${origin}/styles.css`, {
-      headers: { "If-None-Match": etag }
+    const identity = await request(origin, "/styles.css", {
+      headers: { "Accept-Encoding": "gzip;q=0, identity;q=1" }
     });
-    assert.equal(cached.status, 304);
-    assert.equal(await cached.text(), "");
+    assert.equal(identity.status, 200);
+    assert.equal(identity.headers["content-encoding"], undefined);
+    assert.notEqual(identity.headers.etag, gzip.headers.etag);
+
+    const wildcard = await request(origin, "/styles.css", {
+      headers: { "Accept-Encoding": "*" }
+    });
+    assert.equal(wildcard.headers["content-encoding"], "gzip");
+
+    const identityPreferred = await request(origin, "/styles.css", {
+      headers: { "Accept-Encoding": "gzip;q=0.3, identity;q=0.8" }
+    });
+    assert.equal(identityPreferred.headers["content-encoding"], undefined);
+
+    const wildcardPreferred = await request(origin, "/styles.css", {
+      headers: { "Accept-Encoding": "br;q=1, *;q=0.8, identity;q=0.2" }
+    });
+    assert.equal(wildcardPreferred.headers["content-encoding"], "gzip");
+
+    const defaultIdentity = await request(origin, "/styles.css");
+    assert.equal(defaultIdentity.status, 200);
+    assert.equal(defaultIdentity.headers["content-encoding"], undefined);
+
+    const wildcardExcluded = await request(origin, "/styles.css", {
+      headers: { "Accept-Encoding": "*;q=0" }
+    });
+    assert.equal(wildcardExcluded.status, 406);
+
+    const explicitIdentity = await request(origin, "/styles.css", {
+      headers: { "Accept-Encoding": "*;q=0, identity;q=1" }
+    });
+    assert.equal(explicitIdentity.status, 200);
+    assert.equal(explicitIdentity.headers["content-encoding"], undefined);
+
+    const unacceptable = await request(origin, "/styles.css", {
+      headers: { "Accept-Encoding": "gzip;q=0, identity;q=0, *;q=0" }
+    });
+    assert.equal(unacceptable.status, 406);
+    assert.equal(unacceptable.body.length, 0);
+    assert.equal(unacceptable.headers.vary, "Accept-Encoding");
   });
 });
 
-test("HEAD returns static headers without a response body", async () => {
+test("conditional requests use weak matching and variant-specific validators", async () => {
   await withServer(async (origin) => {
-    const response = await fetch(`${origin}/app.js`, { method: "HEAD" });
+    const gzip = await request(origin, "/app.js", {
+      headers: { "Accept-Encoding": "gzip" }
+    });
+    const gzipEtag = gzip.headers.etag;
+    assert.ok(gzipEtag);
+
+    const weak = await request(origin, "/app.js", {
+      headers: {
+        "Accept-Encoding": "gzip",
+        "If-None-Match": `W/${gzipEtag}`
+      }
+    });
+    assert.equal(weak.status, 304);
+    assert.equal(weak.headers.etag, gzipEtag);
+    assert.equal(weak.headers["content-encoding"], "gzip");
+    assert.equal(weak.headers.vary, "Accept-Encoding");
+    assert.equal(weak.body.length, 0);
+
+    const listed = await request(origin, "/app.js", {
+      headers: {
+        "Accept-Encoding": "gzip",
+        "If-None-Match": `"not-this-one", W/${gzipEtag}`
+      }
+    });
+    assert.equal(listed.status, 304);
+
+    const starredHead = await request(origin, "/app.js", {
+      method: "HEAD",
+      headers: {
+        "Accept-Encoding": "gzip",
+        "If-None-Match": "*"
+      }
+    });
+    assert.equal(starredHead.status, 304);
+    assert.equal(starredHead.headers["content-encoding"], "gzip");
+    assert.equal(starredHead.body.length, 0);
+
+    const identity = await request(origin, "/app.js", {
+      headers: {
+        "Accept-Encoding": "identity",
+        "If-None-Match": gzipEtag
+      }
+    });
+    assert.equal(identity.status, 200);
+    assert.equal(identity.headers["content-encoding"], undefined);
+    assert.notEqual(identity.headers.etag, gzipEtag);
+  });
+});
+
+test("HEAD returns selected static headers without a response body", async () => {
+  await withServer(async (origin) => {
+    const response = await request(origin, "/app.js", {
+      method: "HEAD",
+      headers: { "Accept-Encoding": "gzip;q=1" }
+    });
     assert.equal(response.status, 200);
-    assert.ok(response.headers.get("etag"));
-    assert.equal(await response.text(), "");
+    assert.equal(response.headers["content-encoding"], "gzip");
+    assert.ok(response.headers.etag);
+    assert.ok(Number(response.headers["content-length"]) > 0);
+    assert.equal(response.body.length, 0);
   });
 });

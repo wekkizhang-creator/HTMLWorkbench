@@ -315,7 +315,12 @@ function escapeHtml(value) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, options);
+  let response;
+  try {
+    response = await fetch(path, options);
+  } catch {
+    throw new Error("网络连接失败，请检查网络后重试");
+  }
   const payload = await response.json().catch(() => ({}));
   if (response.status === 401) {
     redirectToLogin();

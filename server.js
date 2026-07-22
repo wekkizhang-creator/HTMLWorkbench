@@ -170,30 +170,38 @@ async function serveStatic(req, res, pathname) {
 
   try {
     const asset = await readStaticAsset(filePath);
-    if (req.headers["if-none-match"] === asset.etag) {
-      res.writeHead(304, {
-        ETag: asset.etag,
-        "Cache-Control": asset.cacheControl,
+    const representation = selectRepresentation(asset, req.headers["accept-encoding"]);
+    if (!representation) {
+      res.writeHead(406, {
+        "Content-Length": "0",
         Vary: "Accept-Encoding"
       });
       res.end();
       return;
     }
 
-    const acceptsGzip = /(?:^|,)\s*gzip\s*(?:,|$)/i.test(req.headers["accept-encoding"] || "");
-    const body = acceptsGzip && asset.gzipBody ? asset.gzipBody : asset.body;
     const headers = {
       "Content-Type": asset.contentType,
       "Cache-Control": asset.cacheControl,
-      "Content-Length": String(body.length),
-      ETag: asset.etag,
+      "Content-Length": String(representation.body.length),
+      ETag: representation.etag,
       Vary: "Accept-Encoding"
     };
-    if (body === asset.gzipBody) {
+    if (representation.encoding) {
       headers["Content-Encoding"] = "gzip";
     }
+
+    if (
+      (req.method === "GET" || req.method === "HEAD")
+      && matchesIfNoneMatch(req.headers["if-none-match"], representation.etag)
+    ) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+
     res.writeHead(200, headers);
-    res.end(req.method === "HEAD" ? undefined : body);
+    res.end(req.method === "HEAD" ? undefined : representation.body);
   } catch (error) {
     if (error.code === "ENOENT") {
       sendError(res, 404, "页面不存在");
@@ -201,6 +209,86 @@ async function serveStatic(req, res, pathname) {
     }
     throw error;
   }
+}
+
+function parseQuality(value) {
+  const normalized = value.trim();
+  if (!/^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(normalized)) {
+    return 0;
+  }
+  return Number(normalized);
+}
+
+function parseAcceptEncoding(header) {
+  const qualities = new Map();
+  if (!header || !String(header).trim()) {
+    return qualities;
+  }
+
+  for (const entry of String(header).split(",")) {
+    const [rawToken, ...parameters] = entry.split(";");
+    const token = rawToken.trim().toLowerCase();
+    if (!token) {
+      continue;
+    }
+
+    let quality = 1;
+    for (const parameter of parameters) {
+      const match = parameter.match(/^\s*q\s*=\s*(.*?)\s*$/i);
+      if (match) {
+        quality = parseQuality(match[1]);
+        break;
+      }
+    }
+    qualities.set(token, Math.max(qualities.get(token) ?? 0, quality));
+  }
+  return qualities;
+}
+
+function selectRepresentation(asset, acceptEncoding) {
+  const qualities = parseAcceptEncoding(acceptEncoding);
+  const wildcardQuality = qualities.get("*");
+  const identityQuality = qualities.has("identity")
+    ? qualities.get("identity")
+    : wildcardQuality === 0 ? 0 : 1;
+  const gzipQuality = qualities.has("gzip")
+    ? qualities.get("gzip")
+    : wildcardQuality ?? 0;
+
+  if (asset.gzipBody && gzipQuality > 0 && gzipQuality >= identityQuality) {
+    return {
+      body: asset.gzipBody,
+      encoding: "gzip",
+      etag: asset.gzipEtag
+    };
+  }
+  if (identityQuality > 0) {
+    return {
+      body: asset.body,
+      encoding: null,
+      etag: asset.etag
+    };
+  }
+  if (asset.gzipBody && gzipQuality > 0) {
+    return {
+      body: asset.gzipBody,
+      encoding: "gzip",
+      etag: asset.gzipEtag
+    };
+  }
+  return null;
+}
+
+function matchesIfNoneMatch(header, etag) {
+  if (!header) {
+    return false;
+  }
+
+  const expected = etag.replace(/^W\//i, "");
+  return String(header).split(",").some((candidate) => {
+    const normalized = candidate.trim();
+    return normalized === "*" || normalized.replace(/^W\//i, "") === expected;
+  });
 }
 
 async function readStaticAsset(filePath) {
@@ -229,6 +317,9 @@ async function readStaticAsset(filePath) {
     contentType: MIME_TYPES.get(extension) || "application/octet-stream",
     etag: `"${createHash("sha256").update(body).digest("base64url")}"`,
     gzipBody,
+    gzipEtag: gzipBody
+      ? `"${createHash("sha256").update(gzipBody).digest("base64url")}"`
+      : null,
     mtimeMs: stats.mtimeMs,
     size: stats.size
   };
