@@ -27,30 +27,55 @@
 - Modify: `package.json:6-10`
 
 **Interfaces:**
-- Produces: `createAppServer(): http.Server`, exported from `server.js` for integration tests.
+- Produces: `createAppServer(): http.Server`, exported from `server.js` for future in-process tests.
 - Produces: static responses with `ETag`, `Cache-Control`, optional `Content-Encoding: gzip`, and `Vary: Accept-Encoding`.
 - Preserves: `node server.js` startup and all existing route behavior.
 
 - [ ] **Step 1: Write the failing static-response tests**
 
-Create `tests/server-static.test.mjs` with a helper that starts `createAppServer()` on an ephemeral port and closes it after each test:
+Create `tests/server-static.test.mjs` with a helper that reserves an ephemeral port, starts the current `server.js` in a child process, and always stops it after each test. The child-process boundary ensures the test can fail safely before `server.js` is refactored to avoid startup on import:
 
 ```js
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import { spawn } from "node:child_process";
+import net from "node:net";
 import test from "node:test";
 
-const require = createRequire(import.meta.url);
-const { createAppServer } = require("../server.js");
+async function reservePort() {
+  const probe = net.createServer();
+  await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const { port } = probe.address();
+  await new Promise((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+  return port;
+}
 
 async function withServer(run) {
-  const server = createAppServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
+  const port = await reservePort();
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HTML_WORKBENCH_DATA_DIR: `${process.cwd()}/data-test`,
+      PORT: String(port)
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("server startup timed out")), 5000);
+    child.once("exit", (code) => reject(new Error(`server exited with code ${code}`)));
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      if (chunk.includes("已启动")) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+  });
   try {
-    await run(`http://127.0.0.1:${address.port}`);
+    await run(`http://127.0.0.1:${port}`);
   } finally {
-    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    child.kill();
+    await new Promise((resolve) => child.once("exit", resolve));
   }
 }
 
@@ -89,7 +114,7 @@ test("HEAD returns static headers without a response body", async () => {
 
 Run: `node --test tests/server-static.test.mjs`
 
-Expected: FAIL because `server.js` does not export `createAppServer` and starts immediately when imported.
+Expected: FAIL on the missing Gzip, ETag, or cache headers while the child process is still cleaned up.
 
 - [ ] **Step 3: Refactor server construction without changing startup behavior**
 
@@ -139,6 +164,15 @@ async function readStaticAsset(filePath) {
 
   const body = await fs.readFile(filePath);
   const extension = path.extname(filePath).toLowerCase();
+  let gzipBody = null;
+  if (COMPRESSIBLE_EXTENSIONS.has(extension) && body.length >= 1024) {
+    try {
+      gzipBody = await gzipAsync(body, { level: 6 });
+    } catch (error) {
+      console.warn(`Static compression failed for ${filePath}: ${error.message}`);
+    }
+  }
+
   const asset = {
     body,
     cacheControl: extension === ".html"
@@ -146,9 +180,7 @@ async function readStaticAsset(filePath) {
       : "public, max-age=600, stale-while-revalidate=86400",
     contentType: MIME_TYPES.get(extension) || "application/octet-stream",
     etag: `"${createHash("sha256").update(body).digest("base64url")}"`,
-    gzipBody: COMPRESSIBLE_EXTENSIONS.has(extension) && body.length >= 1024
-      ? await gzipAsync(body, { level: 6 })
-      : null,
+    gzipBody,
     mtimeMs: stats.mtimeMs,
     size: stats.size
   };
