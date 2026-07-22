@@ -18,4 +18,5 @@ test("app loads records directly and centralizes loading state", async () => {
   assert.match(app, /function setUploadLoading\(/);
   assert.match(css, /@keyframes loading-spin/);
   assert.match(css, /\.records-loading/);
+  assert.match(css, /\.records-loading\[hidden\],\s*\.records-error\[hidden\]\s*\{\s*display:\s*none;/s);
 });

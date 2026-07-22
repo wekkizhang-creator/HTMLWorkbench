@@ -671,6 +671,11 @@ tr:last-child td {
   text-align: center;
 }
 
+.records-loading[hidden],
+.records-error[hidden] {
+  display: none;
+}
+
 .records-error strong {
   color: var(--ink);
 }
