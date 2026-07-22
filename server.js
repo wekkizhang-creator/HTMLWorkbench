@@ -2,6 +2,9 @@ const http = require("node:http");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { createHash } = require("node:crypto");
+const { promisify } = require("node:util");
+const { gzip } = require("node:zlib");
 
 const ROOT_DIR = __dirname;
 const PUBLIC_DIR = path.join(ROOT_DIR, "public");
@@ -16,6 +19,10 @@ const MIME_TYPES = new Map([
   [".svg", "image/svg+xml; charset=utf-8"],
   [".txt", "text/plain; charset=utf-8"]
 ]);
+
+const gzipAsync = promisify(gzip);
+const staticAssetCache = new Map();
+const COMPRESSIBLE_EXTENSIONS = new Set([".css", ".html", ".js", ".json", ".svg", ".txt"]);
 
 loadLocalEnv();
 
@@ -162,13 +169,31 @@ async function serveStatic(req, res, pathname) {
   }
 
   try {
-    const file = await fs.readFile(filePath);
-    const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, {
-      "Content-Type": MIME_TYPES.get(ext) || "application/octet-stream",
-      "Cache-Control": "no-cache"
-    });
-    res.end(file);
+    const asset = await readStaticAsset(filePath);
+    if (req.headers["if-none-match"] === asset.etag) {
+      res.writeHead(304, {
+        ETag: asset.etag,
+        "Cache-Control": asset.cacheControl,
+        Vary: "Accept-Encoding"
+      });
+      res.end();
+      return;
+    }
+
+    const acceptsGzip = /(?:^|,)\s*gzip\s*(?:,|$)/i.test(req.headers["accept-encoding"] || "");
+    const body = acceptsGzip && asset.gzipBody ? asset.gzipBody : asset.body;
+    const headers = {
+      "Content-Type": asset.contentType,
+      "Cache-Control": asset.cacheControl,
+      "Content-Length": String(body.length),
+      ETag: asset.etag,
+      Vary: "Accept-Encoding"
+    };
+    if (body === asset.gzipBody) {
+      headers["Content-Encoding"] = "gzip";
+    }
+    res.writeHead(200, headers);
+    res.end(req.method === "HEAD" ? undefined : body);
   } catch (error) {
     if (error.code === "ENOENT") {
       sendError(res, 404, "页面不存在");
@@ -176,6 +201,39 @@ async function serveStatic(req, res, pathname) {
     }
     throw error;
   }
+}
+
+async function readStaticAsset(filePath) {
+  const stats = await fs.stat(filePath);
+  const cached = staticAssetCache.get(filePath);
+  if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+    return cached;
+  }
+
+  const body = await fs.readFile(filePath);
+  const extension = path.extname(filePath).toLowerCase();
+  let gzipBody = null;
+  if (COMPRESSIBLE_EXTENSIONS.has(extension) && body.length >= 1024) {
+    try {
+      gzipBody = await gzipAsync(body, { level: 6 });
+    } catch (error) {
+      console.warn(`Static compression failed for ${filePath}: ${error.message}`);
+    }
+  }
+
+  const asset = {
+    body,
+    cacheControl: extension === ".html"
+      ? "no-cache"
+      : "public, max-age=600, stale-while-revalidate=86400",
+    contentType: MIME_TYPES.get(extension) || "application/octet-stream",
+    etag: `"${createHash("sha256").update(body).digest("base64url")}"`,
+    gzipBody,
+    mtimeMs: stats.mtimeMs,
+    size: stats.size
+  };
+  staticAssetCache.set(filePath, asset);
+  return asset;
 }
 
 async function route(req, res) {
@@ -229,8 +287,8 @@ async function route(req, res) {
   sendError(res, 405, "请求方法不支持");
 }
 
-async function start() {
-  const server = http.createServer((req, res) => {
+function createAppServer() {
+  return http.createServer((req, res) => {
     route(req, res).catch((error) => {
       sendError(res, error.status || 500, error.status ? error.message : "服务器处理失败");
       if (!error.status) {
@@ -238,6 +296,10 @@ async function start() {
       }
     });
   });
+}
+
+async function start() {
+  const server = createAppServer();
 
   const port = await listenWithFallback(server, START_PORT);
   console.log(`HTML 发布台已启动: http://localhost:${port}`);
@@ -289,7 +351,11 @@ function listenWithFallback(server, startPort) {
   });
 }
 
-start().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (require.main === module) {
+  start().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
+
+module.exports = { createAppServer };

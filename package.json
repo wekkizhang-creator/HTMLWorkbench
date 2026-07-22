@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",
-    "check": "node scripts/check.mjs"
+    "test": "node --test",
+    "check": "node scripts/check.mjs && node --test"
   },
   "keywords": [
     "html",
