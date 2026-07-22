@@ -85,7 +85,7 @@
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M12 3v12m0-12 4 4m-4-4-4 4M5 15v4h14v-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
-                发布
+                <span id="uploadButtonLabel">发布</span>
               </button>
               <button class="button secondary" id="clearButton" type="button">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -122,7 +122,7 @@
           </div>
         </section>
 
-        <section class="panel records-panel" aria-labelledby="recordsTitle">
+        <section class="panel records-panel" id="recordsPanel" aria-busy="true" aria-labelledby="recordsTitle">
           <div class="section-title records-title">
             <h2 id="recordsTitle">上传记录</h2>
             <button class="icon-button" id="refreshButton" type="button" aria-label="刷新记录" title="刷新记录">
@@ -163,6 +163,16 @@
               </thead>
               <tbody id="recordBody"></tbody>
             </table>
+            <div class="records-loading" id="recordsLoading" role="status">
+              <span class="loading-spinner" aria-hidden="true"></span>
+              <span>正在读取上传记录</span>
+              <span class="loading-lines" aria-hidden="true"><i></i><i></i><i></i></span>
+            </div>
+            <div class="records-error" id="recordsError" hidden>
+              <strong>记录加载失败</strong>
+              <span id="recordsErrorMessage">请检查网络后重试</span>
+              <button class="button secondary" id="retryButton" type="button">重新加载</button>
+            </div>
             <div class="empty-state" id="emptyState">
               <svg viewBox="0 0 48 48" aria-hidden="true">
                 <path d="M13 8h16l6 6v26H13z" fill="#f3f6f4" stroke="#7c8985" stroke-width="1.8"/>

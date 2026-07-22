@@ -3,7 +3,10 @@ const state = {
   records: [],
   searchQuery: "",
   selectedFile: null,
-  latestRecord: null
+  latestRecord: null,
+  hasLoadedRecords: false,
+  recordsLoading: false,
+  uploadLoading: false
 };
 
 const MAX_UPLOAD_BYTES = 30 * 1024 * 1024;
@@ -28,13 +31,19 @@ const elements = {
   openLatestButton: document.querySelector("#openLatestButton"),
   originText: document.querySelector("#originText"),
   recordBody: document.querySelector("#recordBody"),
+  recordsError: document.querySelector("#recordsError"),
+  recordsErrorMessage: document.querySelector("#recordsErrorMessage"),
+  recordsLoading: document.querySelector("#recordsLoading"),
+  recordsPanel: document.querySelector("#recordsPanel"),
   refreshButton: document.querySelector("#refreshButton"),
+  retryButton: document.querySelector("#retryButton"),
   searchInput: document.querySelector("#searchInput"),
   titleInput: document.querySelector("#titleInput"),
   toast: document.querySelector("#toast"),
   totalCount: document.querySelector("#totalCount"),
   typeFilter: document.querySelector("#typeFilter"),
   uploadButton: document.querySelector("#uploadButton"),
+  uploadButtonLabel: document.querySelector("#uploadButtonLabel"),
   uploadForm: document.querySelector("#uploadForm"),
   uploadStatus: document.querySelector("#uploadStatus")
 };
@@ -155,19 +164,39 @@ function redirectToLogin() {
   window.location.href = `/login.html?next=${encodeURIComponent(window.location.pathname + window.location.search)}`;
 }
 
-async function ensureAuthenticated() {
-  const response = await fetch("/api/auth", { cache: "no-store" });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload.authenticated) {
-    redirectToLogin();
-    return false;
+function setRecordsLoading(isLoading) {
+  state.recordsLoading = isLoading;
+  elements.recordsPanel.setAttribute("aria-busy", String(isLoading));
+  elements.refreshButton.disabled = isLoading;
+  elements.refreshButton.classList.toggle("is-loading", isLoading);
+  elements.recordsLoading.hidden = !(isLoading && !state.hasLoadedRecords);
+  if (isLoading) {
+    elements.recordsError.hidden = true;
   }
-  return true;
+}
+
+function showRecordsLoadError(message) {
+  if (state.hasLoadedRecords) {
+    showToast(message);
+    return;
+  }
+  elements.recordsLoading.hidden = true;
+  elements.recordsError.hidden = false;
+  elements.recordsErrorMessage.textContent = message || "请检查网络后重试";
+}
+
+function setUploadLoading(isLoading) {
+  state.uploadLoading = isLoading;
+  elements.uploadForm.setAttribute("aria-busy", String(isLoading));
+  elements.uploadButton.disabled = isLoading || !state.selectedFile;
+  elements.uploadButton.classList.toggle("is-loading", isLoading);
+  elements.uploadButtonLabel.textContent = isLoading ? "正在发布" : "发布";
+  elements.uploadStatus.textContent = isLoading ? "发布中" : state.selectedFile ? "已选择" : "待选择";
 }
 
 function setSelectedFile(file) {
   state.selectedFile = file || null;
-  elements.uploadButton.disabled = !state.selectedFile;
+  elements.uploadButton.disabled = !state.selectedFile || state.uploadLoading;
 
   if (!state.selectedFile) {
     elements.fileName.textContent = "选择 HTML 或 ZIP 文件";
@@ -299,9 +328,19 @@ async function api(path, options = {}) {
 }
 
 async function loadRecords() {
-  const payload = await api("/api/uploads");
-  state.records = payload.records || [];
-  renderRecords();
+  setRecordsLoading(true);
+  try {
+    const payload = await api("/api/uploads");
+    state.records = payload.records || [];
+    renderRecords();
+    state.hasLoadedRecords = true;
+    return true;
+  } catch (error) {
+    showRecordsLoadError(error.message);
+    return false;
+  } finally {
+    setRecordsLoading(false);
+  }
 }
 
 async function uploadSelectedFile() {
@@ -313,8 +352,7 @@ async function uploadSelectedFile() {
   formData.append("file", state.selectedFile);
   formData.append("documentType", getSelectedDocumentType());
   formData.append("title", elements.titleInput.value);
-  elements.uploadButton.disabled = true;
-  elements.uploadButton.textContent = "发布中";
+  setUploadLoading(true);
 
   try {
     const payload = await api("/api/uploads", {
@@ -328,8 +366,7 @@ async function uploadSelectedFile() {
     setLatestRecord(payload.record);
     showToast("发布链接已生成，描述已自动补全");
   } finally {
-    elements.uploadButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0-12 4 4m-4-4-4 4M5 15v4h14v-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>发布';
-    elements.uploadButton.disabled = !state.selectedFile;
+    setUploadLoading(false);
   }
 }
 
@@ -496,7 +533,6 @@ elements.uploadForm.addEventListener("submit", async (event) => {
     await uploadSelectedFile();
   } catch (error) {
     showToast(error.message);
-    elements.uploadButton.disabled = !state.selectedFile;
   }
 });
 
@@ -506,12 +542,13 @@ elements.clearButton.addEventListener("click", () => {
 });
 
 elements.refreshButton.addEventListener("click", async () => {
-  try {
-    await loadRecords();
+  if (await loadRecords()) {
     showToast("记录已刷新");
-  } catch (error) {
-    showToast(error.message);
   }
+});
+
+elements.retryButton.addEventListener("click", () => {
+  loadRecords();
 });
 
 elements.copyLatestButton.addEventListener("click", async () => {
@@ -586,13 +623,4 @@ elements.dropzone.addEventListener("drop", (event) => {
   handleFiles(event.dataTransfer.files);
 });
 
-ensureAuthenticated()
-  .then((authenticated) => {
-    if (authenticated) {
-      return loadRecords();
-    }
-    return null;
-  })
-  .catch((error) => {
-    showToast(error.message);
-  });
+loadRecords();
