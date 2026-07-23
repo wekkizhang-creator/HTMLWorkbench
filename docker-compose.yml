@@ -1,14 +1,34 @@
 services:
   html-workbench:
     build: .
+    image: html-workbench:local
     container_name: html-workbench
     restart: unless-stopped
+    depends_on:
+      html-workbench-init:
+        condition: service_completed_successfully
     environment:
       NODE_ENV: production
       PORT: 3000
       HTML_WORKBENCH_DATA_DIR: /data
+      HTML_WORKBENCH_PASSWORD: "${HTML_WORKBENCH_PASSWORD:?HTML_WORKBENCH_PASSWORD is required}"
+      HTML_WORKBENCH_AUTH_SECRET: "${HTML_WORKBENCH_AUTH_SECRET:?HTML_WORKBENCH_AUTH_SECRET is required}"
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - html-workbench-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || 3000) + '/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  html-workbench-init:
+    image: html-workbench:local
+    user: root
+    command: ["chown", "-R", "node:node", "/data"]
+    restart: "no"
     volumes:
       - html-workbench-data:/data
 

@@ -6,10 +6,14 @@ const state = {
   latestRecord: null,
   hasLoadedRecords: false,
   recordsLoading: false,
-  uploadLoading: false
+  uploadLoading: false,
+  visibleRecordCount: 50
 };
 
 const MAX_UPLOAD_BYTES = 30 * 1024 * 1024;
+const RECORDS_PAGE_SIZE = 50;
+const SEARCH_DEBOUNCE_MS = 200;
+let searchDebounceTimer;
 const DEFAULT_DOCUMENT_TYPE = "其他";
 const BASE_DOCUMENT_TYPES = ["分析报告", "原型", "其他"];
 
@@ -27,6 +31,7 @@ const elements = {
   latestLink: document.querySelector("#latestLink"),
   latestTime: document.querySelector("#latestTime"),
   linkStatus: document.querySelector("#linkStatus"),
+  loadMoreButton: document.querySelector("#loadMoreButton"),
   logoutButton: document.querySelector("#logoutButton"),
   openLatestButton: document.querySelector("#openLatestButton"),
   originText: document.querySelector("#originText"),
@@ -253,14 +258,29 @@ function getFilteredRecords() {
   });
 }
 
-function renderRecords() {
+function resetVisibleRecordCount() {
+  state.visibleRecordCount = RECORDS_PAGE_SIZE;
+}
+
+function setRecordCollection(records, { resetVisible = false } = {}) {
+  state.records = records;
+  if (resetVisible) {
+    resetVisibleRecordCount();
+  }
   renderDocumentTypeOptions();
+}
+
+function renderRecords() {
   const filteredRecords = getFilteredRecords();
+  const visibleRecords = filteredRecords.slice(0, state.visibleRecordCount);
+  const remainingCount = filteredRecords.length - visibleRecords.length;
   elements.recordBody.innerHTML = "";
   elements.emptyState.classList.toggle("visible", filteredRecords.length === 0);
+  elements.loadMoreButton.hidden = remainingCount === 0;
+  elements.loadMoreButton.textContent = `\u52a0\u8f7d\u66f4\u591a\uff08\u5269\u4f59 ${remainingCount} \u6761\uff09`;
   elements.emptyText.textContent = state.records.length === 0 ? "暂无记录" : "没有匹配的文件";
 
-  for (const record of filteredRecords) {
+  for (const record of visibleRecords) {
     const link = absoluteUrl(record.url);
     const row = document.createElement("tr");
     row.dataset.id = record.id;
@@ -336,7 +356,7 @@ async function loadRecords() {
   setRecordsLoading(true);
   try {
     const payload = await api("/api/uploads");
-    state.records = payload.records || [];
+    setRecordCollection(payload.records || [], { resetVisible: true });
     renderRecords();
     state.hasLoadedRecords = true;
     return true;
@@ -364,7 +384,7 @@ async function uploadSelectedFile() {
       method: "POST",
       body: formData
     });
-    state.records = [payload.record, ...state.records];
+    setRecordCollection([payload.record, ...state.records]);
     elements.titleInput.value = "";
     setSelectedFile(null);
     renderRecords();
@@ -399,7 +419,7 @@ async function deleteRecord(id) {
   }
 
   await api(`/api/uploads/${id}`, { method: "DELETE" });
-  state.records = state.records.filter((item) => item.id !== id);
+  setRecordCollection(state.records.filter((item) => item.id !== id));
   renderRecords();
   showToast("记录已删除");
 }
@@ -491,7 +511,7 @@ async function replaceRecord(id, button) {
       method: "PUT",
       body: formData
     });
-    state.records = [payload.record, ...state.records.filter((item) => item.id !== id)];
+    setRecordCollection([payload.record, ...state.records.filter((item) => item.id !== id)]);
     renderRecords();
     setLatestRecord(payload.record);
     showToast("文件已替换，访问链接保持不变，可回滚到上一版本");
@@ -518,7 +538,7 @@ async function rollbackRecord(id, button) {
     const payload = await api(`/api/uploads/${id}`, {
       method: "PATCH"
     });
-    state.records = [payload.record, ...state.records.filter((item) => item.id !== id)];
+    setRecordCollection([payload.record, ...state.records.filter((item) => item.id !== id)]);
     renderRecords();
     setLatestRecord(payload.record);
     showToast("已回滚到上一版本");
@@ -574,12 +594,22 @@ elements.documentTypeSelect.addEventListener("change", () => {
 });
 
 elements.searchInput.addEventListener("input", () => {
-  state.searchQuery = elements.searchInput.value;
-  renderRecords();
+  window.clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = window.setTimeout(() => {
+    state.searchQuery = elements.searchInput.value;
+    resetVisibleRecordCount();
+    renderRecords();
+  }, SEARCH_DEBOUNCE_MS);
 });
 
 elements.typeFilter.addEventListener("change", () => {
   state.activeDocumentType = elements.typeFilter.value;
+  resetVisibleRecordCount();
+  renderRecords();
+});
+
+elements.loadMoreButton.addEventListener("click", () => {
+  state.visibleRecordCount += RECORDS_PAGE_SIZE;
   renderRecords();
 });
 

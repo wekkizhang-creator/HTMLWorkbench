@@ -76,6 +76,23 @@ function request(origin, pathname, { body, chunks, headers = {}, method = "GET",
   });
 }
 
+async function authenticate(origin) {
+  const body = JSON.stringify({ password: "885688" });
+  const response = await request(origin, "/api/auth", {
+    body,
+    headers: {
+      "Content-Length": String(Buffer.byteLength(body)),
+      "Content-Type": "application/json"
+    },
+    method: "POST"
+  });
+  assert.equal(response.status, 200);
+  const setCookie = Array.isArray(response.headers["set-cookie"])
+    ? response.headers["set-cookie"][0]
+    : response.headers["set-cookie"];
+  return setCookie.split(";", 1)[0];
+}
+
 function oversizedHeaderRequest(origin) {
   const { hostname, port } = new URL(origin);
   return new Promise((resolve, reject) => {
@@ -114,6 +131,44 @@ function oversizedHeaderRequest(origin) {
   });
 }
 
+function unfinishedUnauthorizedUpload(origin) {
+  const { hostname, port } = new URL(origin);
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host: hostname, port: Number(port) });
+    let response = "";
+    const timeout = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("server waited for an unauthorized request body"));
+    }, 750);
+
+    socket.setEncoding("latin1");
+    socket.on("connect", () => {
+      socket.write([
+        "POST /api/uploads HTTP/1.1",
+        `Host: ${hostname}:${port}`,
+        "Transfer-Encoding: chunked",
+        "Content-Type: application/octet-stream",
+        "Connection: close",
+        "",
+        ""
+      ].join("\r\n"));
+      socket.write(`400\r\n${"x".repeat(1024)}\r\n`);
+    });
+    socket.on("data", (chunk) => {
+      response += chunk;
+      const match = response.match(/^HTTP\/1\.1 (\d{3})/);
+      if (match) {
+        clearTimeout(timeout);
+        socket.destroy();
+        resolve(Number(match[1]));
+      }
+    });
+    socket.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+  });
+}
 async function reservePort() {
   const probe = net.createServer();
   await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
@@ -166,13 +221,31 @@ test("oversized Content-Length is rejected before the API waits for the body", a
   });
 });
 
+test("unauthorized uploads are rejected before the request body ends", async () => {
+  await withAppServer(async (origin) => {
+    assert.equal(await unfinishedUnauthorizedUpload(origin), 401);
+  });
+});
+
+test("malformed auth cookies are treated as unauthorized", async () => {
+  await withAppServer(async (origin) => {
+    const response = await request(origin, "/api/uploads", {
+      headers: { Cookie: "html_workbench_auth=%" }
+    });
+    assert.equal(response.status, 401);
+  });
+});
 test("chunked request bodies are rejected when their total exceeds 31 MiB", async () => {
   await withAppServer(async (origin) => {
+    const cookie = await authenticate(origin);
     const chunks = Array.from({ length: 31 }, () => Buffer.alloc(1024 * 1024));
     chunks.push(Buffer.from([0]));
     const response = await request(origin, "/api/uploads", {
       chunks,
-      headers: { "Content-Type": "application/octet-stream" },
+      headers: {
+        Cookie: cookie,
+        "Content-Type": "application/octet-stream"
+      },
       method: "POST",
       timeoutMs: 10000
     });
@@ -181,10 +254,10 @@ test("chunked request bodies are rejected when their total exceeds 31 MiB", asyn
   });
 });
 
-test("a request body at the 31 MiB boundary reaches API authorization", async () => {
+test("a request body at the 31 MiB boundary is accepted by the body collector", async () => {
   await withAppServer(async (origin) => {
     const body = Buffer.alloc(MAX_REQUEST_BODY_BYTES);
-    const response = await request(origin, "/api/uploads", {
+    const response = await request(origin, "/api/auth", {
       body,
       headers: {
         "Content-Length": String(body.length),

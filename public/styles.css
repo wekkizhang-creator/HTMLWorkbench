@@ -659,6 +659,20 @@ tr:last-child td {
   display: flex;
 }
 
+.records-pagination {
+  display: flex;
+  justify-content: center;
+  margin-top: 14px;
+}
+
+.records-pagination .button {
+  min-width: 220px;
+}
+
+.records-pagination .button[hidden] {
+  display: none;
+}
+
 .records-loading,
 .records-error {
   display: grid;

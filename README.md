@@ -108,10 +108,16 @@ sudo bash deploy.sh
 ```bash
 git clone --branch owncnd_codex/html https://github.com/wekkizhang-creator/HTMLWorkbench.git
 cd HTMLWorkbench
+cat > .env <<EOF
+HTML_WORKBENCH_PASSWORD=885688
+HTML_WORKBENCH_AUTH_SECRET=$(openssl rand -hex 32)
+EOF
+chmod 600 .env
+docker compose config
 docker compose up -d --build
 ```
 
-服务默认暴露在服务器 `3000` 端口。生产环境仍建议用 Nginx 反代到 `127.0.0.1:3000`，并配置 HTTPS。
+服务只监听主机回环地址 `127.0.0.1:3000`。生产环境请用 Nginx 反向代理，并配置 HTTPS。
 
 ### 自托管环境变量
 

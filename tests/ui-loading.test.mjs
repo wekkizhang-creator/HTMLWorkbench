@@ -10,7 +10,7 @@ const ELEMENT_IDS = [
   "originText", "recordBody", "recordsError", "recordsErrorMessage", "recordsLoading",
   "recordsPanel", "refreshButton", "retryButton", "searchInput", "titleInput", "toast",
   "totalCount", "typeFilter", "uploadButton", "uploadButtonLabel", "uploadForm",
-  "uploadStatus"
+  "uploadStatus", "loadMoreButton"
 ];
 
 class FakeClassList {
@@ -49,6 +49,7 @@ class FakeElement {
     this.files = [];
     this.hidden = false;
     this.href = "";
+    this.innerHTMLSetCount = 0;
     this.listeners = new Map();
     this.style = {};
     this.tagName = tagName.toUpperCase();
@@ -62,6 +63,7 @@ class FakeElement {
   }
 
   set innerHTML(value) {
+    this.innerHTMLSetCount += 1;
     this._innerHTML = String(value);
     if (value === "") {
       this.children = [];
@@ -135,6 +137,16 @@ function sampleRecord(overrides = {}) {
   };
 }
 
+function sampleRecords(count, overridesForIndex = () => ({})) {
+  return Array.from({ length: count }, (_, index) => sampleRecord({
+    id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+    originalName: `record-${String(index).padStart(3, "0")}.html`,
+    title: `Record ${String(index).padStart(3, "0")}`,
+    uploadedAt: new Date(Date.UTC(2026, 6, 23, 8, 0, 0) - index * 1000).toISOString(),
+    ...overridesForIndex(index)
+  }));
+}
+
 async function waitFor(predicate, message = "condition was not met") {
   const deadline = Date.now() + 1000;
   while (!predicate()) {
@@ -161,6 +173,9 @@ async function createAppHarness(initialResponses = []) {
 
   const responses = [...initialResponses];
   const requests = [];
+  const timers = new Map();
+  let currentTime = 0;
+  let nextTimerId = 1;
   const fetch = async (url, options = {}) => {
     requests.push({ options, url });
     if (responses.length === 0) {
@@ -190,13 +205,23 @@ async function createAppHarness(initialResponses = []) {
   };
   const window = {
     addEventListener() {},
-    clearTimeout() {},
+    clearTimeout(timerId) {
+      timers.delete(timerId);
+    },
     confirm: () => true,
     isSecureContext: true,
     location,
     prompt: () => "",
     removeEventListener() {},
-    setTimeout: () => 1
+    setTimeout(callback, delay = 0) {
+      const timerId = nextTimerId;
+      nextTimerId += 1;
+      timers.set(timerId, {
+        callback,
+        dueAt: currentTime + Number(delay || 0)
+      });
+      return timerId;
+    }
   };
   const context = {
     FormData,
@@ -210,6 +235,20 @@ async function createAppHarness(initialResponses = []) {
 
   vm.runInNewContext(source, context, { filename: "public/app.js" });
   return {
+    advanceTimersBy(milliseconds) {
+      currentTime += milliseconds;
+      while (true) {
+        const dueTimer = [...timers.entries()]
+          .filter(([, timer]) => timer.dueAt <= currentTime)
+          .sort((first, second) => first[1].dueAt - second[1].dueAt)[0];
+        if (!dueTimer) {
+          break;
+        }
+        const [timerId, timer] = dueTimer;
+        timers.delete(timerId);
+        timer.callback();
+      }
+    },
     elements,
     enqueue: (...items) => responses.push(...items),
     location,
@@ -275,4 +314,95 @@ test("first-load errors are announced and indefinite motion respects user prefer
   assert.match(html, /id="recordsError"[^>]*role="alert"/);
   assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)/);
   assert.match(css, /animation:\s*none/);
+});
+
+test("records render in batches of 50 and load more reports the remaining count", async () => {
+  const harness = await createAppHarness([
+    jsonResponse(200, { records: sampleRecords(125) })
+  ]);
+  await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
+
+  assert.equal(harness.elements.recordBody.children.length, 50);
+  assert.equal(harness.elements.loadMoreButton.hidden, false);
+  assert.equal(harness.elements.loadMoreButton.textContent, "\u52a0\u8f7d\u66f4\u591a\uff08\u5269\u4f59 75 \u6761\uff09");
+
+  await harness.elements.loadMoreButton.dispatch("click");
+  assert.equal(harness.elements.recordBody.children.length, 100);
+  assert.equal(harness.elements.loadMoreButton.textContent, "\u52a0\u8f7d\u66f4\u591a\uff08\u5269\u4f59 25 \u6761\uff09");
+
+  await harness.elements.loadMoreButton.dispatch("click");
+  assert.equal(harness.elements.recordBody.children.length, 125);
+  assert.equal(harness.elements.loadMoreButton.hidden, true);
+});
+
+test("search waits 200ms and searches records outside the first rendered batch", async () => {
+  const harness = await createAppHarness([
+    jsonResponse(200, {
+      records: sampleRecords(75, (index) => ({
+        title: index === 70 ? "Deep target record" : `Ordinary record ${index}`
+      }))
+    })
+  ]);
+  await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
+
+  harness.elements.searchInput.value = "Deep target";
+  await harness.elements.searchInput.dispatch("input");
+  assert.equal(harness.elements.recordBody.children.length, 50);
+
+  harness.advanceTimersBy(199);
+  assert.equal(harness.elements.recordBody.children.length, 50);
+
+  harness.advanceTimersBy(1);
+  assert.equal(harness.elements.recordBody.children.length, 1);
+  assert.match(harness.elements.recordBody.children[0].innerHTML, /Deep target record/);
+  assert.equal(harness.elements.loadMoreButton.hidden, true);
+});
+
+test("search and type changes reset the visible record limit", async () => {
+  const harness = await createAppHarness([
+    jsonResponse(200, { records: sampleRecords(120, () => ({ documentType: "Analysis" })) })
+  ]);
+  await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
+
+  await harness.elements.loadMoreButton.dispatch("click");
+  assert.equal(harness.elements.recordBody.children.length, 100);
+
+  harness.elements.searchInput.value = "Record";
+  await harness.elements.searchInput.dispatch("input");
+  harness.advanceTimersBy(200);
+  assert.equal(harness.elements.recordBody.children.length, 50);
+
+  await harness.elements.loadMoreButton.dispatch("click");
+  assert.equal(harness.elements.recordBody.children.length, 100);
+
+  harness.elements.typeFilter.value = "Analysis";
+  await harness.elements.typeFilter.dispatch("change");
+  assert.equal(harness.elements.recordBody.children.length, 50);
+});
+
+test("record type options are not rebuilt by search, filter, or load more", async () => {
+  const harness = await createAppHarness([
+    jsonResponse(200, { records: sampleRecords(75) })
+  ]);
+  await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
+  const uploadOptionsWrites = harness.elements.documentTypeSelect.innerHTMLSetCount;
+  const filterOptionsWrites = harness.elements.typeFilter.innerHTMLSetCount;
+
+  await harness.elements.loadMoreButton.dispatch("click");
+  harness.elements.searchInput.value = "Record";
+  await harness.elements.searchInput.dispatch("input");
+  harness.advanceTimersBy(200);
+  harness.elements.typeFilter.value = "Analysis";
+  await harness.elements.typeFilter.dispatch("change");
+
+  assert.equal(harness.elements.documentTypeSelect.innerHTMLSetCount, uploadOptionsWrites);
+  assert.equal(harness.elements.typeFilter.innerHTMLSetCount, filterOptionsWrites);
+});
+
+test("records view includes a hidden load-more control", async () => {
+  const html = await readFile("public/index.html", "utf8");
+  const css = await readFile("public/styles.css", "utf8");
+
+  assert.match(html, /id="loadMoreButton"[^>]*hidden/);
+  assert.match(css, /\.records-pagination/);
 });

@@ -87,6 +87,17 @@ function sendError(res, statusCode, message) {
   sendJson(res, statusCode, { error: message });
 }
 
+function rejectUnauthorizedRequest(req, res) {
+  req.pause();
+  res.shouldKeepAlive = false;
+  res.setHeader("Connection", "close");
+  res.once("finish", () => {
+    if (!req.destroyed) {
+      req.destroy();
+    }
+  });
+  sendError(res, 401, "Please enter the access password first");
+}
 function safeResolve(baseDir, urlPath) {
   let decodedPath;
   try {
@@ -418,12 +429,20 @@ async function route(req, res) {
   }
 
   if (pathname === "/api/uploads") {
+    if (!(await isAuthorizedRequest(req))) {
+      rejectUnauthorizedRequest(req, res);
+      return;
+    }
     await callApiModule("uploads", req, res, url);
     return;
   }
 
   const deleteMatch = pathname.match(/^\/api\/uploads\/([0-9a-f-]{36})$/i);
   if (deleteMatch) {
+    if (!(await isAuthorizedRequest(req))) {
+      rejectUnauthorizedRequest(req, res);
+      return;
+    }
     url.pathname = "/api/delete-upload";
     url.searchParams.set("id", deleteMatch[1]);
     await callApiModule("deleteUpload", req, res, url);
