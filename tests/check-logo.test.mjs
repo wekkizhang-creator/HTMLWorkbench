@@ -15,6 +15,7 @@ const CHECKED_SOURCE_FILES = [
   "api/download.mjs",
   "api/auth.mjs",
   "api/view.mjs",
+  "api/health.mjs",
   "lib/auth.mjs",
   "lib/constants.mjs",
   "lib/http.mjs",

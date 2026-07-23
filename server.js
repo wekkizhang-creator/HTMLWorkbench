@@ -3,12 +3,15 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { createHash } = require("node:crypto");
+const { Readable } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 const { promisify } = require("node:util");
 const { gzip } = require("node:zlib");
 
 const ROOT_DIR = __dirname;
 const PUBLIC_DIR = path.join(ROOT_DIR, "public");
 const START_PORT = Number(process.env.PORT || 3000);
+const MAX_REQUEST_BODY_BYTES = 31 * 1024 * 1024;
 
 const MIME_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
@@ -30,6 +33,7 @@ const API_MODULES = {
   auth: pathToFileURL(path.join(ROOT_DIR, "api", "auth.mjs")).href,
   download: pathToFileURL(path.join(ROOT_DIR, "api", "download.mjs")).href,
   uploads: pathToFileURL(path.join(ROOT_DIR, "api", "uploads.mjs")).href,
+  health: pathToFileURL(path.join(ROOT_DIR, "api", "health.mjs")).href,
   deleteUpload: pathToFileURL(path.join(ROOT_DIR, "api", "delete-upload.mjs")).href,
   view: pathToFileURL(path.join(ROOT_DIR, "api", "view.mjs")).href
 };
@@ -99,12 +103,69 @@ function safeResolve(baseDir, urlPath) {
   return resolved;
 }
 
+function requestBodyTooLargeError() {
+  const error = new Error("Request body exceeds the 31 MiB limit");
+  error.status = 413;
+  error.closeConnection = true;
+  return error;
+}
+
 async function collectRequestBody(req) {
-  const chunks = [];
-  for await (const chunk of req) {
-    chunks.push(chunk);
+  const contentLength = req.headers["content-length"];
+  if (
+    contentLength !== undefined
+    && /^\d+$/.test(String(contentLength))
+    && Number(contentLength) > MAX_REQUEST_BODY_BYTES
+  ) {
+    req.pause();
+    throw requestBodyTooLargeError();
   }
-  return Buffer.concat(chunks);
+
+  return new Promise((resolve, reject) => {
+    let chunks = [];
+    let totalBytes = 0;
+    let settled = false;
+
+    const cleanup = () => {
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+      req.off("aborted", onAborted);
+    };
+    const onData = (chunk) => {
+      totalBytes += chunk.length;
+      if (totalBytes <= MAX_REQUEST_BODY_BYTES) {
+        chunks.push(chunk);
+        return;
+      }
+
+      settled = true;
+      chunks = [];
+      cleanup();
+      req.pause();
+      reject(requestBodyTooLargeError());
+    };
+    const onEnd = () => {
+      cleanup();
+      if (!settled) {
+        settled = true;
+        resolve(Buffer.concat(chunks, totalBytes));
+      }
+    };
+    const onError = (error) => {
+      cleanup();
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    };
+    const onAborted = () => onError(new Error("Request body was aborted"));
+
+    req.on("data", onData);
+    req.once("end", onEnd);
+    req.once("error", onError);
+    req.once("aborted", onAborted);
+  });
 }
 
 async function toWebRequest(req, url) {
@@ -126,13 +187,18 @@ async function sendWebResponse(res, response) {
   });
   res.writeHead(response.status);
 
-  if (!response.body) {
+  if (
+    !response.body
+    || res.req?.method === "HEAD"
+    || response.status === 204
+    || response.status === 205
+    || response.status === 304
+  ) {
     res.end();
     return;
   }
 
-  const buffer = Buffer.from(await response.arrayBuffer());
-  res.end(buffer);
+  await pipeline(Readable.fromWeb(response.body), res);
 }
 
 async function callApiModule(moduleName, req, res, url) {
@@ -331,6 +397,11 @@ async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   const pathname = url.pathname;
 
+  if (pathname === "/healthz") {
+    await callApiModule("health", req, res, url);
+    return;
+  }
+
   if (pathname === "/api/auth") {
     await callApiModule("auth", req, res, url);
     return;
@@ -381,6 +452,21 @@ async function route(req, res) {
 function createAppServer() {
   return http.createServer((req, res) => {
     route(req, res).catch((error) => {
+      if (res.headersSent || res.writableEnded || res.destroyed) {
+        if (!res.destroyed) {
+          res.destroy();
+        }
+        return;
+      }
+      if (error.closeConnection) {
+        res.shouldKeepAlive = false;
+        res.setHeader("Connection", "close");
+        res.once("finish", () => {
+          if (!req.destroyed) {
+            req.destroy();
+          }
+        });
+      }
       sendError(res, error.status || 500, error.status ? error.message : "服务器处理失败");
       if (!error.status) {
         console.error(error);
@@ -449,4 +535,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createAppServer };
+module.exports = { createAppServer, sendWebResponse };
