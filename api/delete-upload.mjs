@@ -9,6 +9,7 @@ import {
   publicRecords
 } from "../lib/records.mjs";
 import {
+  assertRecordIndexAvailable,
   deleteObsoleteUploadFiles,
   deleteUpload,
   getRecord,
@@ -25,6 +26,7 @@ export async function DELETE(request) {
     if (!isAuthorizedRequest(request)) {
       return error("Please enter the access password first", 401);
     }
+    await assertRecordIndexAvailable();
     const id = new URL(request.url).searchParams.get("id");
     assertRecordId(id);
     const record = await getRecord(id);
@@ -44,6 +46,7 @@ export async function PUT(request) {
     if (!isAuthorizedRequest(request)) {
       return error("Please enter the access password first", 401);
     }
+    await assertRecordIndexAvailable();
     const id = new URL(request.url).searchParams.get("id");
     assertRecordId(id);
     const record = await getRecord(id);
@@ -102,6 +105,7 @@ export async function PATCH(request) {
     if (!isAuthorizedRequest(request)) {
       return error("Please enter the access password first", 401);
     }
+    await assertRecordIndexAvailable();
     const id = new URL(request.url).searchParams.get("id");
     assertRecordId(id);
     const record = await getRecord(id);

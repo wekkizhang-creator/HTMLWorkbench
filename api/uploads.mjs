@@ -9,7 +9,13 @@ import {
   normalizeDocumentType,
   publicRecords
 } from "../lib/records.mjs";
-import { listRecordsPage, saveIndexedRecord, savePackageUpload, saveUpload } from "../lib/storage.mjs";
+import {
+  assertRecordIndexAvailable,
+  listRecordsPage,
+  saveIndexedRecord,
+  savePackageUpload,
+  saveUpload
+} from "../lib/storage.mjs";
 import { parseZipWebsite } from "../lib/zip.mjs";
 
 export async function GET(request) {
@@ -29,6 +35,7 @@ export async function POST(request) {
     if (!isAuthorizedRequest(request)) {
       return error("Please enter the access password first", 401);
     }
+    await assertRecordIndexAvailable();
     const form = await request.formData();
     const file = form.get("file");
     const documentType = normalizeDocumentType(form.get("documentType"));
