@@ -18,7 +18,7 @@ export async function POST(request) {
         status: 200,
         headers: {
           "Cache-Control": "no-store",
-          "Set-Cookie": createAuthCookie()
+          "Set-Cookie": createAuthCookie({ secure: new URL(request.url).protocol === "https:" })
         }
       }
     );
@@ -27,14 +27,14 @@ export async function POST(request) {
   }
 }
 
-export async function DELETE() {
+export async function DELETE(request) {
   return Response.json(
     { authenticated: false },
     {
       status: 200,
       headers: {
         "Cache-Control": "no-store",
-        "Set-Cookie": clearAuthCookie()
+        "Set-Cookie": clearAuthCookie({ secure: new URL(request.url).protocol === "https:" })
       }
     }
   );

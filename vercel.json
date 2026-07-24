@@ -6,6 +6,10 @@
       "destination": "/api/health"
     },
     {
+      "source": "/public-download-widget/:id",
+      "destination": "/api/download-widget?id=:id"
+    },
+    {
       "source": "/view/:id/:path*",
       "destination": "/api/view?id=:id&path=:path*"
     },

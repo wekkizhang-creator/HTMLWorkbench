@@ -31,6 +31,7 @@ loadLocalEnv();
 const API_MODULES = {
   auth: pathToFileURL(path.join(ROOT_DIR, "api", "auth.mjs")).href,
   download: pathToFileURL(path.join(ROOT_DIR, "api", "download.mjs")).href,
+  downloadWidget: pathToFileURL(path.join(ROOT_DIR, "api", "download-widget.mjs")).href,
   uploads: pathToFileURL(path.join(ROOT_DIR, "api", "uploads.mjs")).href,
   health: pathToFileURL(path.join(ROOT_DIR, "api", "health.mjs")).href,
   deleteUpload: pathToFileURL(path.join(ROOT_DIR, "api", "delete-upload.mjs")).href,
@@ -440,6 +441,13 @@ async function route(req, res) {
     return;
   }
 
+  const downloadWidgetMatch = pathname.match(/^\/public-download-widget\/([0-9a-f-]{36})$/i);
+  if (downloadWidgetMatch) {
+    url.pathname = "/api/download-widget";
+    url.searchParams.set("id", downloadWidgetMatch[1]);
+    await callApiModule("downloadWidget", req, res, url);
+    return;
+  }
   if ((pathname === "/" || pathname === "/index.html") && !(await isAuthorizedRequest(req))) {
     redirectToLogin(req, res);
     return;
@@ -523,7 +531,11 @@ async function start() {
   const server = createAppServer();
   const config = (await getRuntime()).getRuntimeConfig();
 
-  const port = await listenWithFallback(server, config.port, config.host);
+  const port = await listenWithFallback(server, config.port, config.host, process.env.PORT === undefined);
+  if (port !== config.port) {
+    const originName = config.role === "content" ? "HTML_WORKBENCH_PUBLIC_ORIGIN" : "HTML_WORKBENCH_ADMIN_ORIGIN";
+    if (process.env[originName] === undefined) process.env[originName] = `http://localhost:${port}`;
+  }
   console.log(`HTML 发布台已启动: http://localhost:${port}`);
 
   const shutdown = (signal) => {
@@ -541,7 +553,7 @@ async function start() {
   process.on("SIGTERM", shutdown);
 }
 
-function listenWithFallback(server, startPort, host) {
+function listenWithFallback(server, startPort, host, allowFallback) {
   const maxPort = startPort + 20;
 
   return new Promise((resolve, reject) => {
@@ -553,7 +565,7 @@ function listenWithFallback(server, startPort, host) {
 
       const onError = (error) => {
         server.off("listening", onListening);
-        if (error.code === "EADDRINUSE") {
+        if (error.code === "EADDRINUSE" && allowFallback) {
           tryListen(port + 1);
           return;
         }

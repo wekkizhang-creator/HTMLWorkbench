@@ -139,6 +139,9 @@ test("content role exposes view routes but rejects admin APIs", async () => {
   });
   try {
     assert.equal((await request(server.origin, "/api/uploads", "page.wekki.fun")).status, 404);
+    for (const pathname of ["/api/auth", "/api/download", "/index.html", "/styles.css"]) {
+      assert.equal((await request(server.origin, pathname, "page.wekki.fun")).status, 404);
+    }
     assert.equal((await request(server.origin, `/view/${TEST_RECORD_ID}`, "page.wekki.fun")).status, 200);
     assert.equal((await request(server.origin, `/view/${TEST_RECORD_ID}`, "ho.wekki.fun")).status, 421);
   } finally {

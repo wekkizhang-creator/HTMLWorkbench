@@ -380,3 +380,80 @@ test("healthz returns 503 when local storage cannot be prepared", async () => {
     await fs.rm(tempDir, { force: true, recursive: true });
   }
 });
+
+test("an explicitly configured busy port exits instead of falling back", async () => {
+  const occupied = http.createServer();
+  const origin = await listen(occupied);
+  const port = new URL(origin).port;
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HOST: "127.0.0.1",
+      HTML_WORKBENCH_ADMIN_ORIGIN: origin,
+      HTML_WORKBENCH_PUBLIC_ORIGIN: origin,
+      PORT: port
+    },
+    stdio: ["ignore", "ignore", "pipe"]
+  });
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+
+  try {
+    const [code] = await Promise.race([
+      once(child, "exit"),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("explicit busy port did not exit")), 1000))
+    ]);
+    assert.equal(code, 1);
+    assert.match(stderr, /EADDRINUSE/);
+  } finally {
+    if (child.exitCode === null) child.kill();
+    await close(occupied);
+  }
+});
+
+test("developer fallback updates the default origin after the default port is busy", async (t) => {
+  const occupied = http.createServer();
+  try {
+    await new Promise((resolve, reject) => occupied.listen(3000, "127.0.0.1", resolve).once("error", reject));
+  } catch (error) {
+    t.skip(`port 3000 is unavailable: ${error.code || error.message}`);
+    return;
+  }
+
+  const env = { ...process.env, HOST: "127.0.0.1" };
+  delete env.PORT;
+  delete env.HTML_WORKBENCH_ADMIN_ORIGIN;
+  delete env.HTML_WORKBENCH_PUBLIC_ORIGIN;
+  const child = spawn(process.execPath, ["server.js"], { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout.setEncoding("utf8");
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+
+  try {
+    const port = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`fallback server did not start: ${stderr}`)), 3000);
+      child.stdout.on("data", (chunk) => {
+        const match = chunk.match(/http:\/\/localhost:(\d+)/);
+        if (match) {
+          clearTimeout(timeout);
+          resolve(match[1]);
+        }
+      });
+      child.once("exit", (code) => reject(new Error(`fallback server exited with ${code}: ${stderr}`)));
+    });
+    const response = await request(`http://127.0.0.1:${port}`, "/healthz", {
+      headers: { Host: `localhost:${port}` }
+    });
+    assert.equal(response.status, 200);
+  } finally {
+    if (child.exitCode === null) child.kill();
+    await close(occupied);
+  }
+});
