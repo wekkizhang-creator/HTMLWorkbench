@@ -11,6 +11,7 @@ import {
 
 const MAINTENANCE_LOCK_PATH = "record-index-state/v1-maintenance-lock.json";
 const READY_MARKER_PATH = "record-index-state/v1-ready.json";
+const WRITER_LEASE_PREFIX = "record-index-state/v1-leases/writers/";
 
 function recordAt(uploadedAt, index) {
   const id = `${String(index).padStart(8, "0")}-0000-4000-8000-${String(index).padStart(12, "0")}`;
@@ -62,6 +63,30 @@ async function assertMissing(dataDir, storagePath) {
     fs.access(path.join(dataDir, ...storagePath.split("/"))),
     (error) => error.code === "ENOENT"
   );
+}
+
+async function waitFor(check, message, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(message);
+}
+
+async function listLeaseFiles(dataDir, prefix) {
+  const directory = path.join(dataDir, ...prefix.replace(/\/$/, "").split("/"));
+  return fs.readdir(directory).catch((error) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+}
+
+function activeLease(owner, ttlMs = 60_000) {
+  return {
+    owner,
+    expiresAt: new Date(Date.now() + ttlMs).toISOString()
+  };
 }
 
 test("migration repairs missing, damaged, and orphaned indexes and is idempotent", async () => {
@@ -327,6 +352,179 @@ test("orphan cleanup rechecks a concurrently created canonical before deleting i
       page.records.map((record) => record.id).sort(),
       [existing.id, concurrent.id].sort()
     );
+  });
+});
+
+test("migration waits for an existing writer lease and rejects new mutations without partial writes", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    const original = recordAt("2026-06-01T00:00:00.000Z", 50);
+    const replacement = {
+      ...original,
+      title: "Replacement under lease",
+      uploadedAt: "2026-06-02T00:00:00.000Z"
+    };
+    await writeJson(dataDir, original.recordPath, original);
+    await writeJson(dataDir, buildRecordIndexPath(original), buildRecordIndexDocument(original));
+    await writeJson(dataDir, READY_MARKER_PATH, {
+      version: 1,
+      completedAt: "2026-06-01T12:00:00.000Z"
+    });
+
+    let signalMutationStarted;
+    const mutationStarted = new Promise((resolve) => { signalMutationStarted = resolve; });
+    let releaseMutation;
+    const mutationPaused = new Promise((resolve) => { releaseMutation = resolve; });
+    assert.equal(typeof storage.withRecordMutation, "function");
+    const mutation = storage.withRecordMutation(async () => {
+      signalMutationStarted();
+      await mutationPaused;
+      return storage.saveIndexedRecord(replacement, original);
+    });
+
+    await mutationStarted;
+    await waitFor(
+      async () => (await listLeaseFiles(dataDir, WRITER_LEASE_PREFIX)).length === 1,
+      "writer lease was not created"
+    );
+
+    let migrationProgressed = false;
+    const migration = storage.migrateRecordIndex({
+      leasePollIntervalMs: 5,
+      leaseWaitTimeoutMs: 1000,
+      onProgress() {
+        migrationProgressed = true;
+      }
+    });
+    await waitFor(
+      () => fs.access(path.join(dataDir, ...MAINTENANCE_LOCK_PATH.split("/"))).then(() => true, () => false),
+      "maintenance owner lease was not created"
+    );
+
+    await fs.access(path.join(dataDir, ...READY_MARKER_PATH.split("/")));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(migrationProgressed, false);
+
+    const blocked = recordAt("2026-06-03T00:00:00.000Z", 51);
+    await assert.rejects(
+      () => storage.withRecordMutation(async () => {
+        await storage.saveUpload(blocked.id, Buffer.from("must not be written"));
+        await storage.saveIndexedRecord(blocked);
+      }),
+      (error) => error.status === 503 && error.code === "record_index_maintenance"
+    );
+    await assertMissing(dataDir, blocked.recordPath);
+    await assertMissing(dataDir, `uploads/${blocked.id}.html`);
+
+    releaseMutation();
+    assert.equal((await mutation).id, original.id);
+    assert.deepEqual(await migration, {
+      scanned: 1,
+      created: 0,
+      repaired: 0,
+      skipped: 1,
+      failed: 0
+    });
+    await fs.access(path.join(dataDir, ...buildRecordIndexPath(replacement).split("/")));
+    await assertMissing(dataDir, buildRecordIndexPath(original));
+    await assertMissing(dataDir, MAINTENANCE_LOCK_PATH);
+    assert.deepEqual(await listLeaseFiles(dataDir, WRITER_LEASE_PREFIX), []);
+  });
+});
+
+test("migration wait timeout releases its owner lease and preserves readiness", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    await writeJson(dataDir, `${WRITER_LEASE_PREFIX}active-writer.json`, activeLease("active-writer"));
+    await writeJson(dataDir, READY_MARKER_PATH, {
+      version: 1,
+      completedAt: "2026-06-04T00:00:00.000Z"
+    });
+
+    await assert.rejects(
+      () => storage.migrateRecordIndex({
+        leasePollIntervalMs: 5,
+        leaseWaitTimeoutMs: 25
+      }),
+      (error) => error.status === 503 && error.code === "record_index_lease_timeout"
+    );
+
+    await assertMissing(dataDir, MAINTENANCE_LOCK_PATH);
+    await fs.access(path.join(dataDir, ...READY_MARKER_PATH.split("/")));
+  });
+});
+
+test("expired maintenance owner is recovered and ordinary requests still honor readiness", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    const record = recordAt("2026-06-05T00:00:00.000Z", 52);
+    await writeJson(dataDir, record.recordPath, record);
+    await writeJson(dataDir, buildRecordIndexPath(record), buildRecordIndexDocument(record));
+    await writeJson(dataDir, MAINTENANCE_LOCK_PATH, {
+      owner: "expired-owner",
+      expiresAt: new Date(Date.now() - 1000).toISOString()
+    });
+    await writeJson(dataDir, READY_MARKER_PATH, {
+      version: 1,
+      completedAt: "2000-01-01T00:00:00.000Z"
+    });
+
+    assert.deepEqual(await storage.migrateRecordIndex(), {
+      scanned: 1,
+      created: 0,
+      repaired: 0,
+      skipped: 1,
+      failed: 0
+    });
+    const ready = JSON.parse(await fs.readFile(
+      path.join(dataDir, ...READY_MARKER_PATH.split("/")),
+      "utf8"
+    ));
+    assert.notEqual(ready.completedAt, "2000-01-01T00:00:00.000Z");
+    await assertMissing(dataDir, MAINTENANCE_LOCK_PATH);
+
+    await fs.rm(path.join(dataDir, ...READY_MARKER_PATH.split("/")));
+    await writeJson(dataDir, MAINTENANCE_LOCK_PATH, {
+      owner: "expired-owner-2",
+      expiresAt: new Date(Date.now() - 1000).toISOString()
+    });
+    await assert.rejects(
+      () => storage.listRecordsPage({
+        limit: 50,
+        cursor: null,
+        query: "",
+        documentType: ""
+      }),
+      (error) => error.status === 503 && error.code === "record_index_not_ready"
+    );
+    await assertMissing(dataDir, MAINTENANCE_LOCK_PATH);
+  });
+});
+
+test("legacy maintenance owner without an expiry cannot become a permanent lock", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    await writeJson(dataDir, MAINTENANCE_LOCK_PATH, {
+      owner: "legacy-owner",
+      startedAt: "2000-01-01T00:00:00.000Z"
+    });
+
+    assert.deepEqual(await storage.migrateRecordIndex(), {
+      scanned: 0,
+      created: 0,
+      repaired: 0,
+      skipped: 0,
+      failed: 0
+    });
+    await assertMissing(dataDir, MAINTENANCE_LOCK_PATH);
+  });
+});
+
+test("writer lease is released when a mutation throws", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    await assert.rejects(
+      () => storage.withRecordMutation(async () => {
+        throw new Error("mutation failed");
+      }),
+      /mutation failed/
+    );
+    assert.deepEqual(await listLeaseFiles(dataDir, WRITER_LEASE_PREFIX), []);
   });
 });
 

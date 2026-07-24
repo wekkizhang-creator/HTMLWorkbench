@@ -10,11 +10,11 @@ import {
   publicRecords
 } from "../lib/records.mjs";
 import {
-  assertRecordIndexAvailable,
   listRecordsPage,
   saveIndexedRecord,
   savePackageUpload,
-  saveUpload
+  saveUpload,
+  withRecordMutation
 } from "../lib/storage.mjs";
 import { parseZipWebsite } from "../lib/zip.mjs";
 
@@ -35,61 +35,62 @@ export async function POST(request) {
     if (!isAuthorizedRequest(request)) {
       return error("Please enter the access password first", 401);
     }
-    await assertRecordIndexAvailable();
-    const form = await request.formData();
-    const file = form.get("file");
-    const documentType = normalizeDocumentType(form.get("documentType"));
-    const title = form.get("title");
-    const originalName = assertUploadFile(file);
-    const arrayBuffer = await file.arrayBuffer();
-    const fileBuffer = Buffer.from(arrayBuffer);
+    return await withRecordMutation(async () => {
+      const form = await request.formData();
+      const file = form.get("file");
+      const documentType = normalizeDocumentType(form.get("documentType"));
+      const title = form.get("title");
+      const originalName = assertUploadFile(file);
+      const arrayBuffer = await file.arrayBuffer();
+      const fileBuffer = Buffer.from(arrayBuffer);
 
-    if (getUploadKind(originalName) === "zip") {
-      const packageData = parseZipWebsite(fileBuffer);
-      const temporaryRecord = buildPackageRecord({
-        documentType,
-        indexBuffer: packageData.indexHtml,
+      if (getUploadKind(originalName) === "zip") {
+        const packageData = parseZipWebsite(fileBuffer);
+        const temporaryRecord = buildPackageRecord({
+          documentType,
+          indexBuffer: packageData.indexHtml,
+          originalName,
+          title,
+          packageBlob: {
+            pathname: "",
+            url: ""
+          },
+          siteFiles: [],
+          sourceSize: fileBuffer.length
+        });
+        const { packageBlob, siteFiles } = await savePackageUpload(
+          temporaryRecord.id,
+          fileBuffer,
+          packageData.files
+        );
+        const record = await saveIndexedRecord({
+          ...temporaryRecord,
+          sourceBlobPath: packageBlob.pathname,
+          sourceBlobUrl: packageBlob.url,
+          siteFiles
+        });
+        return json({ record: publicRecords([record])[0] }, 201);
+      }
+
+      const temporaryRecord = buildRecord({
+        fileBuffer,
         originalName,
+        documentType,
         title,
-        packageBlob: {
+        uploadBlob: {
           pathname: "",
           url: ""
-        },
-        siteFiles: [],
-        sourceSize: fileBuffer.length
+        }
       });
-      const { packageBlob, siteFiles } = await savePackageUpload(
-        temporaryRecord.id,
-        fileBuffer,
-        packageData.files
-      );
+      const uploadBlob = await saveUpload(temporaryRecord.id, fileBuffer);
       const record = await saveIndexedRecord({
         ...temporaryRecord,
-        sourceBlobPath: packageBlob.pathname,
-        sourceBlobUrl: packageBlob.url,
-        siteFiles
+        blobPath: uploadBlob.pathname,
+        blobUrl: uploadBlob.url
       });
+
       return json({ record: publicRecords([record])[0] }, 201);
-    }
-
-    const temporaryRecord = buildRecord({
-      fileBuffer,
-      originalName,
-      documentType,
-      title,
-      uploadBlob: {
-        pathname: "",
-        url: ""
-      }
     });
-    const uploadBlob = await saveUpload(temporaryRecord.id, fileBuffer);
-    const record = await saveIndexedRecord({
-      ...temporaryRecord,
-      blobPath: uploadBlob.pathname,
-      blobUrl: uploadBlob.url
-    });
-
-    return json({ record: publicRecords([record])[0] }, 201);
   } catch (requestError) {
     return error(requestError.message || "Upload failed", requestError.status || 500);
   }

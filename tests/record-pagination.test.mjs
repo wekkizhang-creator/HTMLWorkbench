@@ -87,6 +87,58 @@ async function listIndexPaths(dataDir) {
   return files.sort().map((file) => `record-index/v1/${file}`);
 }
 
+function createMemoryBlobSdk(initialEntries, { beforeFirstIndexList } = {}) {
+  const store = new Map(
+    Object.entries(initialEntries).map(([storagePath, value]) => [
+      storagePath,
+      typeof value === "string" ? value : JSON.stringify(value)
+    ])
+  );
+  let indexListCalls = 0;
+
+  return {
+    store,
+    async put(storagePath, body, options = {}) {
+      if (options.allowOverwrite === false && store.has(storagePath)) {
+        const conflict = new Error("Blob already exists");
+        conflict.status = 409;
+        throw conflict;
+      }
+      const text = typeof body === "string"
+        ? body
+        : Buffer.from(body).toString("utf8");
+      store.set(storagePath, text);
+      return { pathname: storagePath, url: storagePath };
+    },
+    async get(storagePath) {
+      if (!store.has(storagePath)) return null;
+      return {
+        statusCode: 200,
+        stream: new Blob([store.get(storagePath)]).stream()
+      };
+    },
+    async del(storagePaths) {
+      for (const storagePath of Array.isArray(storagePaths) ? storagePaths : [storagePaths]) {
+        store.delete(storagePath);
+      }
+    },
+    async list({ cursor, limit = 1000, prefix }) {
+      if (prefix === "record-index/v1/" && indexListCalls++ === 0) {
+        await beforeFirstIndexList?.();
+      }
+      const paths = [...store.keys()].filter((storagePath) => storagePath.startsWith(prefix)).sort();
+      const start = Number(cursor || 0);
+      const page = paths.slice(start, start + limit);
+      const next = start + page.length;
+      return {
+        blobs: page.map((pathname) => ({ pathname })),
+        cursor: next < paths.length ? String(next) : undefined,
+        hasMore: next < paths.length
+      };
+    }
+  };
+}
+
 test("reverse timestamp index paths sort newest first", () => {
   const older = buildRecordIndexPath({ id: ID_A, uploadedAt: "2026-01-01T00:00:00.000Z" });
   const newer = buildRecordIndexPath({ id: ID_B, uploadedAt: "2026-07-24T00:00:00.000Z" });
@@ -216,8 +268,29 @@ test("Blob scans request only the current page's remaining match count", async (
   )).sort((first, second) => buildRecordIndexPath(first).localeCompare(buildRecordIndexPath(second)));
   const indexes = records.map((record) => buildRecordIndexDocument(record));
   const listLimits = [];
+  const leaseStore = new Map();
   const blobSdk = {
+    async put(storagePath, body, options = {}) {
+      if (options.allowOverwrite === false && leaseStore.has(storagePath)) {
+        const conflict = new Error("Blob already exists");
+        conflict.status = 409;
+        throw conflict;
+      }
+      leaseStore.set(storagePath, String(body));
+      return { pathname: storagePath, url: storagePath };
+    },
+    async del(storagePaths) {
+      for (const storagePath of Array.isArray(storagePaths) ? storagePaths : [storagePaths]) {
+        leaseStore.delete(storagePath);
+      }
+    },
     async get(storagePath) {
+      if (leaseStore.has(storagePath)) {
+        return {
+          statusCode: 200,
+          stream: new Blob([leaseStore.get(storagePath)]).stream()
+        };
+      }
       if (storagePath === "record-index-state/v1-ready.json") {
         return {
           statusCode: 200,
@@ -230,6 +303,17 @@ test("Blob scans request only the current page's remaining match count", async (
         : null;
     },
     async list({ cursor, limit, prefix }) {
+      if (prefix !== "record-index/v1/") {
+        const paths = [...leaseStore.keys()].filter((storagePath) => storagePath.startsWith(prefix)).sort();
+        const start = Number(cursor || 0);
+        const page = paths.slice(start, start + limit);
+        const next = start + page.length;
+        return {
+          blobs: page.map((pathname) => ({ pathname })),
+          cursor: next < paths.length ? String(next) : undefined,
+          hasMore: next < paths.length
+        };
+      }
       assert.equal(prefix, "record-index/v1/");
       listLimits.push(limit);
       const start = Number(cursor || 0);
@@ -264,6 +348,108 @@ test("Blob scans request only the current page's remaining match count", async (
       records.filter((record) => record.title.startsWith("Needle")).map((record) => record.id));
     assert.deepEqual(listLimits, [2, 1, 2]);
   } finally {
+    if (previousBlobToken === undefined) delete process.env.BLOB_READ_WRITE_TOKEN;
+    else process.env.BLOB_READ_WRITE_TOKEN = previousBlobToken;
+    if (previousVercel === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = previousVercel;
+  }
+});
+
+test("migration waits for an active Blob reader lease and reader finally releases it", async () => {
+  const previousBlobToken = process.env.BLOB_READ_WRITE_TOKEN;
+  const previousVercel = process.env.VERCEL;
+  process.env.BLOB_READ_WRITE_TOKEN = "test-token";
+  delete process.env.VERCEL;
+
+  const record = recordAt("2026-07-01T00:00:00.000Z", 60);
+  const canonical = { ...record, recordPath: `records/${record.id}.json` };
+  const index = buildRecordIndexDocument(canonical);
+  let signalListBlocked;
+  const listBlocked = new Promise((resolve) => { signalListBlocked = resolve; });
+  let releaseList;
+  const listPaused = new Promise((resolve) => { releaseList = resolve; });
+  const blobSdk = createMemoryBlobSdk({
+    [canonical.recordPath]: canonical,
+    [index.indexPath]: index,
+    "record-index-state/v1-ready.json": {
+      version: 1,
+      completedAt: "2026-07-01T12:00:00.000Z"
+    }
+  }, {
+    async beforeFirstIndexList() {
+      signalListBlocked();
+      await listPaused;
+    }
+  });
+
+  let listing;
+  let migration;
+  try {
+    const storage = await import(`../lib/storage.mjs?reader-lease-test=${randomUUID()}`);
+    listing = storage.listRecordsPage({
+      blobSdk,
+      limit: 50,
+      cursor: null,
+      query: "",
+      documentType: ""
+    });
+    await listBlocked;
+
+    let migrationProgressed = false;
+    migration = storage.migrateRecordIndex({
+      blobSdk,
+      leasePollIntervalMs: 5,
+      leaseWaitTimeoutMs: 1000,
+      onProgress() {
+        migrationProgressed = true;
+      }
+    });
+    const maintenancePath = "record-index-state/v1-maintenance-lock.json";
+    const deadline = Date.now() + 1000;
+    while (!blobSdk.store.has(maintenancePath) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(blobSdk.store.has(maintenancePath), true);
+    assert.equal(blobSdk.store.has("record-index-state/v1-ready.json"), true);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(migrationProgressed, false);
+
+    releaseList();
+    assert.equal((await listing).records.length, 1);
+    assert.deepEqual(await migration, {
+      scanned: 1,
+      created: 0,
+      repaired: 0,
+      skipped: 1,
+      failed: 0
+    });
+    assert.equal(blobSdk.store.has(maintenancePath), false);
+    assert.deepEqual(
+      [...blobSdk.store.keys()].filter((storagePath) => storagePath.startsWith(
+        "record-index-state/v1-leases/readers/"
+      )),
+      []
+    );
+
+    await assert.rejects(
+      () => storage.listRecordsPage({
+        blobSdk,
+        limit: 50,
+        cursor: "invalid-cursor",
+        query: "",
+        documentType: ""
+      }),
+      (error) => error.status === 400
+    );
+    assert.deepEqual(
+      [...blobSdk.store.keys()].filter((storagePath) => storagePath.startsWith(
+        "record-index-state/v1-leases/readers/"
+      )),
+      []
+    );
+  } finally {
+    releaseList?.();
+    await Promise.allSettled([listing, migration].filter(Boolean));
     if (previousBlobToken === undefined) delete process.env.BLOB_READ_WRITE_TOKEN;
     else process.env.BLOB_READ_WRITE_TOKEN = previousBlobToken;
     if (previousVercel === undefined) delete process.env.VERCEL;

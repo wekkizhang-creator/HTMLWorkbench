@@ -9,7 +9,6 @@ import {
   publicRecords
 } from "../lib/records.mjs";
 import {
-  assertRecordIndexAvailable,
   deleteObsoleteUploadFiles,
   deleteUpload,
   getRecord,
@@ -17,7 +16,8 @@ import {
   savePackageUpload,
   savePreviousVersion,
   saveIndexedRecord,
-  saveUpload
+  saveUpload,
+  withRecordMutation
 } from "../lib/storage.mjs";
 import { parseZipWebsite } from "../lib/zip.mjs";
 
@@ -26,16 +26,17 @@ export async function DELETE(request) {
     if (!isAuthorizedRequest(request)) {
       return error("Please enter the access password first", 401);
     }
-    await assertRecordIndexAvailable();
-    const id = new URL(request.url).searchParams.get("id");
-    assertRecordId(id);
-    const record = await getRecord(id);
-    if (!record) {
-      return error("Upload record does not exist", 404);
-    }
+    return await withRecordMutation(async () => {
+      const id = new URL(request.url).searchParams.get("id");
+      assertRecordId(id);
+      const record = await getRecord(id);
+      if (!record) {
+        return error("Upload record does not exist", 404);
+      }
 
-    await deleteUpload(record);
-    return json({ ok: true });
+      await deleteUpload(record);
+      return json({ ok: true });
+    });
   } catch (requestError) {
     return error(requestError.message || "Delete failed", requestError.status || 500);
   }
@@ -46,55 +47,56 @@ export async function PUT(request) {
     if (!isAuthorizedRequest(request)) {
       return error("Please enter the access password first", 401);
     }
-    await assertRecordIndexAvailable();
-    const id = new URL(request.url).searchParams.get("id");
-    assertRecordId(id);
-    const record = await getRecord(id);
-    if (!record) {
-      return error("Upload record does not exist", 404);
-    }
+    return await withRecordMutation(async () => {
+      const id = new URL(request.url).searchParams.get("id");
+      assertRecordId(id);
+      const record = await getRecord(id);
+      if (!record) {
+        return error("Upload record does not exist", 404);
+      }
 
-    const form = await request.formData();
-    const file = form.get("file");
-    const title = form.get("title");
-    const originalName = assertUploadFile(file);
-    const arrayBuffer = await file.arrayBuffer();
-    const fileBuffer = Buffer.from(arrayBuffer);
-    const previousVersion = await savePreviousVersion(record);
-    const recordWithPrevious = {
-      ...record,
-      previousVersion
-    };
+      const form = await request.formData();
+      const file = form.get("file");
+      const title = form.get("title");
+      const originalName = assertUploadFile(file);
+      const arrayBuffer = await file.arrayBuffer();
+      const fileBuffer = Buffer.from(arrayBuffer);
+      const previousVersion = await savePreviousVersion(record);
+      const recordWithPrevious = {
+        ...record,
+        previousVersion
+      };
 
-    let updatedRecord;
-    if (getUploadKind(originalName) === "zip") {
-      const packageData = parseZipWebsite(fileBuffer);
-      const { packageBlob, siteFiles } = await savePackageUpload(record.id, fileBuffer, packageData.files, {
-        allowOverwrite: true
-      });
-      updatedRecord = buildReplacementPackageRecord({
-        record: recordWithPrevious,
-        indexBuffer: packageData.indexHtml,
-        originalName,
-        title,
-        packageBlob,
-        siteFiles,
-        sourceSize: fileBuffer.length
-      });
-    } else {
-      const uploadBlob = await saveUpload(record.id, fileBuffer, { allowOverwrite: true });
-      updatedRecord = buildReplacementRecord({
-        record: recordWithPrevious,
-        fileBuffer,
-        originalName,
-        title,
-        uploadBlob
-      });
-    }
+      let updatedRecord;
+      if (getUploadKind(originalName) === "zip") {
+        const packageData = parseZipWebsite(fileBuffer);
+        const { packageBlob, siteFiles } = await savePackageUpload(record.id, fileBuffer, packageData.files, {
+          allowOverwrite: true
+        });
+        updatedRecord = buildReplacementPackageRecord({
+          record: recordWithPrevious,
+          indexBuffer: packageData.indexHtml,
+          originalName,
+          title,
+          packageBlob,
+          siteFiles,
+          sourceSize: fileBuffer.length
+        });
+      } else {
+        const uploadBlob = await saveUpload(record.id, fileBuffer, { allowOverwrite: true });
+        updatedRecord = buildReplacementRecord({
+          record: recordWithPrevious,
+          fileBuffer,
+          originalName,
+          title,
+          uploadBlob
+        });
+      }
 
-    const savedRecord = await saveIndexedRecord(updatedRecord, record);
-    await deleteObsoleteUploadFiles(record, savedRecord);
-    return json({ record: publicRecords([savedRecord])[0] });
+      const savedRecord = await saveIndexedRecord(updatedRecord, record);
+      await deleteObsoleteUploadFiles(record, savedRecord);
+      return json({ record: publicRecords([savedRecord])[0] });
+    });
   } catch (requestError) {
     return error(requestError.message || "Replace failed", requestError.status || 500);
   }
@@ -105,16 +107,17 @@ export async function PATCH(request) {
     if (!isAuthorizedRequest(request)) {
       return error("Please enter the access password first", 401);
     }
-    await assertRecordIndexAvailable();
-    const id = new URL(request.url).searchParams.get("id");
-    assertRecordId(id);
-    const record = await getRecord(id);
-    if (!record) {
-      return error("Upload record does not exist", 404);
-    }
+    return await withRecordMutation(async () => {
+      const id = new URL(request.url).searchParams.get("id");
+      assertRecordId(id);
+      const record = await getRecord(id);
+      if (!record) {
+        return error("Upload record does not exist", 404);
+      }
 
-    const restored = await restorePreviousVersion(record);
-    return json({ record: publicRecords([restored])[0] });
+      const restored = await restorePreviousVersion(record);
+      return json({ record: publicRecords([restored])[0] });
+    });
   } catch (requestError) {
     return error(requestError.message || "Rollback failed", requestError.status || 500);
   }
