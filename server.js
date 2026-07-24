@@ -10,7 +10,6 @@ const { gzip } = require("node:zlib");
 
 const ROOT_DIR = __dirname;
 const PUBLIC_DIR = path.join(ROOT_DIR, "public");
-const START_PORT = Number(process.env.PORT || 3000);
 const MAX_REQUEST_BODY_BYTES = 31 * 1024 * 1024;
 
 const MIME_TYPES = new Map([
@@ -37,6 +36,12 @@ const API_MODULES = {
   deleteUpload: pathToFileURL(path.join(ROOT_DIR, "api", "delete-upload.mjs")).href,
   view: pathToFileURL(path.join(ROOT_DIR, "api", "view.mjs")).href
 };
+
+const RUNTIME_MODULE = pathToFileURL(path.join(ROOT_DIR, "lib", "runtime.mjs")).href;
+
+async function getRuntime() {
+  return import(RUNTIME_MODULE);
+}
 
 function loadLocalEnv() {
   for (const fileName of [".env.local", ".env"]) {
@@ -407,6 +412,18 @@ async function readStaticAsset(filePath) {
 async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   const pathname = url.pathname;
+  const runtime = await getRuntime();
+  const config = runtime.getRuntimeConfig();
+
+  if (!runtime.isAllowedHost(req.headers.host, config.role)) {
+    sendError(res, 421, "Misdirected request");
+    return;
+  }
+
+  if (!runtime.isRouteAllowed(config.role, pathname)) {
+    sendError(res, 404, "Page does not exist");
+    return;
+  }
 
   if (pathname === "/healthz") {
     await callApiModule("health", req, res, url);
@@ -451,6 +468,14 @@ async function route(req, res) {
 
   const viewMatch = pathname.match(/^\/view\/([0-9a-f-]{36})(?:\/(.*))?$/i);
   if (viewMatch) {
+    if (config.role === "admin") {
+      res.writeHead(307, {
+        "Cache-Control": "no-store",
+        Location: new URL(`${pathname}${url.search}`, config.publicOrigin).href
+      });
+      res.end();
+      return;
+    }
     url.pathname = "/api/view";
     url.searchParams.set("id", viewMatch[1]);
     if (viewMatch[2]) {
@@ -496,8 +521,9 @@ function createAppServer() {
 
 async function start() {
   const server = createAppServer();
+  const config = (await getRuntime()).getRuntimeConfig();
 
-  const port = await listenWithFallback(server, START_PORT);
+  const port = await listenWithFallback(server, config.port, config.host);
   console.log(`HTML 发布台已启动: http://localhost:${port}`);
 
   const shutdown = (signal) => {
@@ -515,7 +541,7 @@ async function start() {
   process.on("SIGTERM", shutdown);
 }
 
-function listenWithFallback(server, startPort) {
+function listenWithFallback(server, startPort, host) {
   const maxPort = startPort + 20;
 
   return new Promise((resolve, reject) => {
@@ -540,7 +566,7 @@ function listenWithFallback(server, startPort) {
 
       server.once("error", onError);
       server.once("listening", onListening);
-      server.listen(port);
+      server.listen(port, host);
     };
 
     tryListen(startPort);

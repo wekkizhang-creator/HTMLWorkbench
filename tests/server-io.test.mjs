@@ -33,9 +33,17 @@ async function close(server) {
 async function withAppServer(run) {
   const server = serverModule.createAppServer();
   const origin = await listen(server);
+  const previousAdminOrigin = process.env.HTML_WORKBENCH_ADMIN_ORIGIN;
+  const previousPublicOrigin = process.env.HTML_WORKBENCH_PUBLIC_ORIGIN;
+  process.env.HTML_WORKBENCH_ADMIN_ORIGIN = origin;
+  process.env.HTML_WORKBENCH_PUBLIC_ORIGIN = origin;
   try {
     await run(origin);
   } finally {
+    if (previousAdminOrigin === undefined) delete process.env.HTML_WORKBENCH_ADMIN_ORIGIN;
+    else process.env.HTML_WORKBENCH_ADMIN_ORIGIN = previousAdminOrigin;
+    if (previousPublicOrigin === undefined) delete process.env.HTML_WORKBENCH_PUBLIC_ORIGIN;
+    else process.env.HTML_WORKBENCH_PUBLIC_ORIGIN = previousPublicOrigin;
     await close(server);
   }
 }
@@ -181,7 +189,12 @@ async function withChildServer(run, env) {
   const port = await reservePort();
   const child = spawn(process.execPath, ["server.js"], {
     cwd: process.cwd(),
-    env: { ...process.env, ...env, PORT: String(port) },
+    env: { ...process.env, ...env,
+      HTML_WORKBENCH_ADMIN_ORIGIN: `http://127.0.0.1:${port}`,
+      HTML_WORKBENCH_PUBLIC_ORIGIN: `http://127.0.0.1:${port}`,
+      HOST: "127.0.0.1",
+      PORT: String(port)
+    },
     stdio: ["ignore", "pipe", "pipe"]
   });
   const origin = `http://127.0.0.1:${port}`;

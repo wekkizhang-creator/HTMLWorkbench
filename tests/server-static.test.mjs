@@ -22,6 +22,9 @@ async function withServer(run, { args = ["server.js"], startupTimeoutMs = 5000 }
     env: {
       ...process.env,
       HTML_WORKBENCH_DATA_DIR: `${process.cwd()}/data-test`,
+      HTML_WORKBENCH_ADMIN_ORIGIN: `http://127.0.0.1:${port}`,
+      HTML_WORKBENCH_PUBLIC_ORIGIN: `http://127.0.0.1:${port}`,
+      HOST: "127.0.0.1",
       PORT: String(port)
     },
     stdio: ["ignore", "pipe", "pipe"]
