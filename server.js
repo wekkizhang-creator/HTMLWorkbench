@@ -531,9 +531,11 @@ async function start() {
   const server = createAppServer();
   const config = (await getRuntime()).getRuntimeConfig();
 
-  const port = await listenWithFallback(server, config.port, config.host, process.env.PORT === undefined);
+  const activeOriginName = config.role === "content" ? "HTML_WORKBENCH_PUBLIC_ORIGIN" : "HTML_WORKBENCH_ADMIN_ORIGIN";
+  const allowFallback = process.env.PORT === undefined && process.env[activeOriginName] === undefined;
+  const port = await listenWithFallback(server, config.port, config.host, allowFallback);
   if (port !== config.port) {
-    const originName = config.role === "content" ? "HTML_WORKBENCH_PUBLIC_ORIGIN" : "HTML_WORKBENCH_ADMIN_ORIGIN";
+    const originName = activeOriginName;
     if (process.env[originName] === undefined) process.env[originName] = `http://localhost:${port}`;
   }
   console.log(`HTML 发布台已启动: http://localhost:${port}`);

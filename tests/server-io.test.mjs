@@ -457,3 +457,39 @@ test("developer fallback updates the default origin after the default port is bu
     await close(occupied);
   }
 });
+
+test("an explicit admin origin disables fallback when the default port is busy", async (t) => {
+  const occupied = http.createServer();
+  try {
+    await new Promise((resolve, reject) => occupied.listen(3000, "127.0.0.1", resolve).once("error", reject));
+  } catch (error) {
+    t.skip(`port 3000 is unavailable: ${error.code || error.message}`);
+    return;
+  }
+
+  const env = {
+    ...process.env,
+    HOST: "127.0.0.1",
+    HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",
+    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun"
+  };
+  delete env.PORT;
+  const child = spawn(process.execPath, ["server.js"], { cwd: process.cwd(), env, stdio: ["ignore", "ignore", "pipe"] });
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+
+  try {
+    const [code] = await Promise.race([
+      once(child, "exit"),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("explicit origin did not disable fallback")), 1000))
+    ]);
+    assert.equal(code, 1);
+    assert.match(stderr, /EADDRINUSE/);
+  } finally {
+    if (child.exitCode === null) child.kill();
+    await close(occupied);
+  }
+});
