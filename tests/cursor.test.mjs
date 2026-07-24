@@ -48,3 +48,42 @@ test("tampered cursors are rejected as bad requests", () => {
 
   assert.throws(() => decodePageCursor(tampered, { query: "", documentType: "" }), (error) => error.status === 400);
 });
+
+test("production cursor operations require the dedicated secret", () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const previousSecret = process.env.HTML_WORKBENCH_CURSOR_SECRET;
+  const state = { version: 1, storageCursor: null, query: "", documentType: "" };
+  const isMissingSecretError = (error) => (
+    error.status === 500
+    && error.code === "cursor_secret_required"
+    && error.message.includes("HTML_WORKBENCH_CURSOR_SECRET")
+  );
+
+  process.env.NODE_ENV = "production";
+  delete process.env.HTML_WORKBENCH_CURSOR_SECRET;
+  try {
+    assert.throws(() => encodePageCursor(state), isMissingSecretError);
+
+    process.env.HTML_WORKBENCH_CURSOR_SECRET = "explicit-production-secret";
+    const cursor = encodePageCursor(state);
+    delete process.env.HTML_WORKBENCH_CURSOR_SECRET;
+    assert.throws(() => decodePageCursor(cursor, state), isMissingSecretError);
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+    if (previousSecret === undefined) delete process.env.HTML_WORKBENCH_CURSOR_SECRET;
+    else process.env.HTML_WORKBENCH_CURSOR_SECRET = previousSecret;
+  }
+});
+
+test("an explicit cursor secret supports round-trip", () => {
+  const previousSecret = process.env.HTML_WORKBENCH_CURSOR_SECRET;
+  process.env.HTML_WORKBENCH_CURSOR_SECRET = "explicit-test-secret";
+  const state = { version: 1, storageCursor: "next", query: "report", documentType: "analysis" };
+  try {
+    assert.deepEqual(decodePageCursor(encodePageCursor(state), state), state);
+  } finally {
+    if (previousSecret === undefined) delete process.env.HTML_WORKBENCH_CURSOR_SECRET;
+    else process.env.HTML_WORKBENCH_CURSOR_SECRET = previousSecret;
+  }
+});

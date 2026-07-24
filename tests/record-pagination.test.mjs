@@ -54,3 +54,14 @@ test("record filters search public text and document type", () => {
   assert.equal(matchesRecord(record, { query: "", documentType: "Analysis" }), true);
   assert.equal(matchesRecord(record, { query: "", documentType: "Prototype" }), false);
 });
+
+test("pre-epoch timestamps are rejected and epoch indexes stay 16 digits", () => {
+  const epochPath = buildRecordIndexPath({ id: ID_A, uploadedAt: "1970-01-01T00:00:00.000Z" });
+  const timestamp = epochPath.match(/^record-index\/v1\/(\d+)-/);
+  assert.equal(timestamp?.[1].length, 16);
+
+  assert.throws(
+    () => buildRecordIndexPath({ id: ID_A, uploadedAt: "1969-12-31T23:59:59.999Z" }),
+    (error) => error.status === 400 && /timestamp/i.test(error.message)
+  );
+});
