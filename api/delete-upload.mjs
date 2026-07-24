@@ -15,7 +15,7 @@ import {
   restorePreviousVersion,
   savePackageUpload,
   savePreviousVersion,
-  saveRecord,
+  saveIndexedRecord,
   saveUpload
 } from "../lib/storage.mjs";
 import { parseZipWebsite } from "../lib/zip.mjs";
@@ -89,7 +89,7 @@ export async function PUT(request) {
       });
     }
 
-    const savedRecord = await saveRecord(updatedRecord);
+    const savedRecord = await saveIndexedRecord(updatedRecord, record);
     await deleteObsoleteUploadFiles(record, savedRecord);
     return json({ record: publicRecords([savedRecord])[0] });
   } catch (requestError) {

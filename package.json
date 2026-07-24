@@ -7,6 +7,8 @@
     "dev": "node server.js",
     "start": "node server.js",
     "test": "node --test",
+    "migrate:record-index": "node scripts/migrate-record-index.mjs",
+    "migrate:record-index:dry-run": "node scripts/migrate-record-index.mjs --dry-run",
     "check": "node scripts/check.mjs && node --test"
   },
   "keywords": [

@@ -1,5 +1,6 @@
 import { error, json, methodNotAllowed } from "../lib/http.mjs";
 import { isAuthorizedRequest } from "../lib/auth.mjs";
+import { normalizePageRequest } from "../lib/cursor.mjs";
 import {
   assertUploadFile,
   buildPackageRecord,
@@ -8,7 +9,7 @@ import {
   normalizeDocumentType,
   publicRecords
 } from "../lib/records.mjs";
-import { listRecords, savePackageUpload, saveRecord, saveUpload } from "../lib/storage.mjs";
+import { listRecordsPage, saveIndexedRecord, savePackageUpload, saveUpload } from "../lib/storage.mjs";
 import { parseZipWebsite } from "../lib/zip.mjs";
 
 export async function GET(request) {
@@ -16,8 +17,8 @@ export async function GET(request) {
     if (!isAuthorizedRequest(request)) {
       return error("Please enter the access password first", 401);
     }
-    const records = await listRecords();
-    return json({ records: publicRecords(records) });
+    const result = await listRecordsPage(normalizePageRequest(request.url));
+    return json(result);
   } catch (requestError) {
     return error(requestError.message || "Failed to read upload records", requestError.status || 500);
   }
@@ -55,7 +56,7 @@ export async function POST(request) {
         fileBuffer,
         packageData.files
       );
-      const record = await saveRecord({
+      const record = await saveIndexedRecord({
         ...temporaryRecord,
         sourceBlobPath: packageBlob.pathname,
         sourceBlobUrl: packageBlob.url,
@@ -75,7 +76,7 @@ export async function POST(request) {
       }
     });
     const uploadBlob = await saveUpload(temporaryRecord.id, fileBuffer);
-    const record = await saveRecord({
+    const record = await saveIndexedRecord({
       ...temporaryRecord,
       blobPath: uploadBlob.pathname,
       blobUrl: uploadBlob.url
