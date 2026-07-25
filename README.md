@@ -1,9 +1,7 @@
 # HTMLWorkbench
 HTML 发布台
 
-一个适配 Vercel 部署的 HTML 上传发布台。上传 `.html` / `.htm` 单文件或包含 `index.html` 的 `.zip` 网页包后，系统会生成稳定的 `/view/:id` 访问链接，并在上传记录中管理文件、标题、大小、上传时间和链接。
-
-当前管理入口带密码验证，默认密码是 `885688`。上传时会自动从 HTML 的 `<title>`、`meta description`、标题和正文中生成文件描述与最多 3 个标签。上传时可选择文档类型，内置 `分析报告`、`原型`、`其他`，也可以新建类型；记录页支持按标题/描述搜索，并可按文档类型和标签筛选。记录操作支持替换 HTML 或 ZIP 文件，替换后原访问链接保持不变，并可回滚到上一次文件版本。访问链接页面右下角提供下载按钮，输入密码通过后可下载当前 HTML 文件或原始 ZIP 包。
+HTMLWorkbench publishes uploaded `.html`, `.htm`, or ZIP sites and manages their metadata. The trusted management origin and untrusted published content run as separate services in production.
 
 ## 本地运行
 
@@ -12,25 +10,16 @@ npm install
 npm run dev
 ```
 
-默认从 `http://localhost:3000` 启动；如果端口被占用，会自动尝试后续端口。
-
-本地开发没有配置 `BLOB_READ_WRITE_TOKEN` 时，会把上传文件写入 `data/` 目录。该目录不会被提交。
+默认管理服务从 `http://localhost:3000` 启动。未配置 `BLOB_READ_WRITE_TOKEN` 时，开发数据写入未跟踪的 `data/` 目录。
 
 ## Vercel 部署
 
-1. 在 Vercel 导入这个 GitHub 仓库。
-2. 创建并连接一个 Vercel Blob Store。
-3. 确认项目环境变量里有 `BLOB_READ_WRITE_TOKEN`。连接 Blob Store 后 Vercel 通常会自动注入。
-4. Framework Preset 选择 `Other` 即可，无需构建命令。
-5. 部署完成后访问 Vercel 域名，上传记录会保存在 Vercel Blob。
+1. 在 Vercel 导入仓库。
+2. 创建并连接 Vercel Blob Store。
+3. 配置 `BLOB_READ_WRITE_TOKEN`。
+4. Framework Preset 选择 `Other`，不需要构建命令。
 
-## Vercel 适配说明
-
-- 静态管理界面放在 `public/`。
-- Serverless Functions 放在 `api/`。
-- `/view/:id` 通过 `vercel.json` rewrite 到 `/api/view?id=:id`。
-- 上传文件和记录都使用 Vercel Blob 持久化。
-- 自托管部署支持上传文件最大 30 MB；如果部署到 Vercel，需要注意 Serverless Function 请求体限制通常不适合 30 MB 直传。
+`/view/:id` 由 `vercel.json` rewrite 到 `/api/view?id=:id`。自托管支持最大 30 MB 的代理请求；Vercel Serverless 的请求体限制不适合相同大小的直传。
 
 ## 校验
 
@@ -40,135 +29,214 @@ npm run check
 
 ## 自有服务器部署
 
-这个分支可以直接部署到自己的云服务器。自托管时不需要 Vercel Blob，上传的 HTML、ZIP 网页包和记录会保存到服务器磁盘。建议把数据目录放在 `/var/lib/html-workbench`，代码目录放在 `/opt/html-workbench`。
+生产布局固定为：
 
-### 方式一：Node.js + systemd + Nginx
+- 应用：`/opt/html-workbench`
+- 数据：`/var/lib/html-workbench`
+- 用户/组：`htmlworkbench:htmlworkbench`
+- 管理服务：`html-workbench`，`127.0.0.1:3000`，读写数据
+- 内容服务：`html-workbench-content`，`127.0.0.1:3001`，只读数据
+- 公共配置文件：`/etc/html-workbench.env`
+- Nginx 配置：`/etc/nginx/conf.d/ho.wekki.fun.conf`
 
-服务器要求：
-
-- Ubuntu / Debian / CentOS 等 Linux 服务器
-- Node.js 20 或更新版本
-- Git
-- Nginx
-
-首次部署：
+首次配置前先准备 checkout：
 
 ```bash
 sudo mkdir -p /opt/html-workbench /var/lib/html-workbench
+id htmlworkbench >/dev/null 2>&1 || sudo useradd --system --home /opt/html-workbench --shell /usr/sbin/nologin htmlworkbench
 sudo git clone --branch owncnd_codex/html https://github.com/wekkizhang-creator/HTMLWorkbench.git /opt/html-workbench
-cd /opt/html-workbench
-sudo npm install --omit=dev
-sudo useradd --system --home /opt/html-workbench --shell /usr/sbin/nologin htmlworkbench
-sudo chown -R htmlworkbench:htmlworkbench /var/lib/html-workbench
-sudo cp deploy/self-host/html-workbench.service /etc/systemd/system/html-workbench.service
-sudo cp deploy/self-host/html-workbench.env.example /etc/html-workbench.env
-sudo systemctl daemon-reload
-sudo systemctl enable html-workbench
-sudo systemctl start html-workbench
 ```
 
-检查服务：
+不要修改 `/etc/nginx/conf.d/` 中与 `ho.wekki.fun` 无关的 `oc`、`material` 或其他站点配置。
 
-```bash
-sudo systemctl status html-workbench
-curl http://127.0.0.1:3000
+### DNS
+
+为公共内容域名配置：
+
+```text
+Host record: page
+Type: A
+Value: 163.7.4.158
+TTL: 600
 ```
 
-配置 Nginx：
+发布前确认 `page.wekki.fun` 已解析到 `163.7.4.158`。
+
+### 自托管环境变量
+
+首次部署先准备只允许 root 和服务组读取的环境文件：
 
 ```bash
-sudo cp /opt/html-workbench/deploy/self-host/nginx.conf /etc/nginx/sites-available/html-workbench
-sudo ln -s /etc/nginx/sites-available/html-workbench /etc/nginx/sites-enabled/html-workbench
+sudo cp /opt/html-workbench/deploy/self-host/html-workbench.env.example /etc/html-workbench.env
+sudo chown root:htmlworkbench /etc/html-workbench.env
+sudo chmod 640 /etc/html-workbench.env
+sudoedit /etc/html-workbench.env
+```
+
+必须配置：
+
+```text
+HTML_WORKBENCH_DATA_DIR=/var/lib/html-workbench
+HTML_WORKBENCH_ADMIN_ORIGIN=https://ho.wekki.fun
+HTML_WORKBENCH_PUBLIC_ORIGIN=https://page.wekki.fun
+HTML_WORKBENCH_PASSWORD=<admin password>
+HTML_WORKBENCH_AUTH_SECRET=<random secret>
+HTML_WORKBENCH_DOWNLOAD_PASSWORD=<separate download password>
+HTML_WORKBENCH_CURSOR_SECRET=<random cursor signing secret>
+```
+
+不要把真实密码或 secret 提交到 Git。`HOST`、`PORT` 和 `HTML_WORKBENCH_ROLE` 由各自的 systemd unit 固定，不应放入共享环境文件；unit 的启动命令也会覆盖旧版环境文件中遗留的 `PORT=3000`。
+
+### Nginx 和证书
+
+现有 `ho.wekki.fun` 配置必须先备份。下面只替换该站点文件，不会触碰无关 host：
+
+```bash
+sudo cp /etc/nginx/conf.d/ho.wekki.fun.conf /etc/nginx/conf.d/ho.wekki.fun.conf.pre-dual-service
+sudo cp /opt/html-workbench/deploy/self-host/nginx.conf /etc/nginx/conf.d/ho.wekki.fun.conf
+sudo nginx -t
+sudo systemctl reload nginx
+sudo certbot --nginx -d ho.wekki.fun
+sudo certbot --nginx -d page.wekki.fun
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-把 `/etc/nginx/sites-available/html-workbench` 里的 `server_name example.com;` 改成你的域名。如果暂时没有域名，可以改成服务器公网 IP。
+`ho.wekki.fun` 将管理请求代理到 3000，并以 307 把原始 `/view` request URI 重定向到 `page.wekki.fun`。公共 host 只代理 `/view/` 和 `/healthz`；API、登录、管理静态文件和其他路径都返回 404。
 
-更新部署：
+### 首次安装和更新
+
+服务器需要 Node.js 20+、Git、Nginx、systemd、curl 和 Certbot 2.9.0 或兼容版本。
+
+按上一节准备 checkout、配置 `/etc/html-workbench.env` 和 Nginx 后：
 
 ```bash
-cd /opt/html-workbench
-sudo git fetch origin owncnd_codex/html
-sudo git checkout owncnd_codex/html
-sudo git reset --hard origin/owncnd_codex/html
-sudo npm install --omit=dev
-sudo systemctl restart html-workbench
+sudo bash /opt/html-workbench/deploy/self-host/deploy.sh
 ```
 
-也可以直接使用脚本：
+更新同样运行 `deploy.sh`。脚本使用 `npm ci --omit=dev`，预检环境变量，停止两个服务，运行 live record-index migration，成功后才 daemon-reload 并重启两个服务。任何失败都会保持内容服务停止；如果管理服务原来在运行，trap 会尝试恢复管理服务。脚本永远不会自动执行显式 lock recovery。
+
+### Migration gate
+
+从 pre-release 版本进行第一次升级时，旧管理进程不认识 writer leases。首次 dry-run、live migration 或 recovery 都必须执行 **stop-the-world**：先停止 admin 和 content，绝不能在旧 admin 仍接受写入时运行 migration。
+
+Dry-run：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wekkizhang-creator/HTMLWorkbench/owncnd_codex/html/deploy/self-host/deploy.sh -o deploy.sh
-sudo bash deploy.sh
+sudo systemctl stop html-workbench
+sudo systemctl stop html-workbench-content 2>/dev/null || true
+sudo systemd-run --wait --collect --pipe \
+  --property=User=htmlworkbench \
+  --property=Group=htmlworkbench \
+  --property=WorkingDirectory=/opt/html-workbench \
+  --property=EnvironmentFile=/etc/html-workbench.env \
+  /usr/bin/npm run migrate:record-index:dry-run
+sudo systemctl start html-workbench
+```
+
+Live migration 使用部署脚本，它实现完整的 stop-the-world gate 和失败 trap：
+
+```bash
+sudo bash /opt/html-workbench/deploy/self-host/deploy.sh
+```
+
+Explicit recovery 只能由操作员确认没有 migration 正在运行后手工执行。不要在脚本或定时任务中自动调用：
+
+```bash
+sudo systemctl stop html-workbench
+sudo systemctl stop html-workbench-content 2>/dev/null || true
+systemctl list-units 'html-workbench-record-index-migration-*'
+sudo systemd-run --wait --collect --pipe \
+  --property=User=htmlworkbench \
+  --property=Group=htmlworkbench \
+  --property=WorkingDirectory=/opt/html-workbench \
+  --property=EnvironmentFile=/etc/html-workbench.env \
+  /usr/bin/npm run migrate:record-index:recover
+# Recovery 后必须重新运行 live migration；成功前不要启动 content。
+sudo bash /opt/html-workbench/deploy/self-host/deploy.sh
+```
+
+### 状态和健康检查
+
+```bash
+sudo systemctl status html-workbench
+sudo systemctl status html-workbench-content
+curl -fsS -H 'Host: ho.wekki.fun' http://127.0.0.1:3000/healthz
+curl -fsS -H 'Host: page.wekki.fun' http://127.0.0.1:3001/healthz
+sudo nginx -t
 ```
 
 ### 方式二：Docker Compose
 
+Compose 使用同一镜像和 named volume；admin 读写挂载，content 以 `:ro` 挂载并使用只读容器文件系统。先创建未跟踪的 `.env`：
+
 ```bash
-git clone --branch owncnd_codex/html https://github.com/wekkizhang-creator/HTMLWorkbench.git
-cd HTMLWorkbench
-cat > .env <<EOF
-HTML_WORKBENCH_PASSWORD=885688
+cd /opt/html-workbench
+umask 077
+read -rsp 'Admin password: ' HTML_WORKBENCH_PASSWORD; echo
+read -rsp 'Download password: ' HTML_WORKBENCH_DOWNLOAD_PASSWORD; echo
 HTML_WORKBENCH_AUTH_SECRET=$(openssl rand -hex 32)
-EOF
-chmod 600 .env
-docker compose config
-docker compose up -d --build
+HTML_WORKBENCH_CURSOR_SECRET=$(openssl rand -hex 32)
+printf '%s\n' \
+  "HTML_WORKBENCH_PASSWORD=$HTML_WORKBENCH_PASSWORD" \
+  "HTML_WORKBENCH_AUTH_SECRET=$HTML_WORKBENCH_AUTH_SECRET" \
+  "HTML_WORKBENCH_DOWNLOAD_PASSWORD=$HTML_WORKBENCH_DOWNLOAD_PASSWORD" \
+  "HTML_WORKBENCH_CURSOR_SECRET=$HTML_WORKBENCH_CURSOR_SECRET" > .env
+docker compose build
+docker compose run --rm --no-deps admin npm run migrate:record-index
+docker compose up -d
 ```
 
-服务只监听主机回环地址 `127.0.0.1:3000`。生产环境请用 Nginx 反向代理，并配置 HTTPS。
-
-### 自托管环境变量
-
-可在 `/etc/html-workbench.env` 中调整：
+Admin 和 content 分别只发布到 `127.0.0.1:3000`、`127.0.0.1:3001`。跨版本升级也必须 stop-the-world：
 
 ```bash
-PORT=3000
-HTML_WORKBENCH_DATA_DIR=/var/lib/html-workbench
+docker compose stop admin content
+docker compose build
+docker compose run --rm --no-deps admin npm run migrate:record-index
+docker compose up -d admin content
 ```
 
-`HTML_WORKBENCH_DATA_DIR` 是上传文件和记录的持久化目录。升级代码、重启服务、重新拉取 Git 分支都不会影响这个目录。
+不要用只读 content service 运行 migration。显式 recovery 与 systemd 相同，只能在确认没有 migration 后，使用 `docker compose run --rm --no-deps admin npm run migrate:record-index:recover` 手工执行，随后再运行 live migration。
 
-管理入口密码可在 `/etc/html-workbench.env` 中修改：
+### Rollback
 
-```bash
-HTML_WORKBENCH_PASSWORD=885688
-HTML_WORKBENCH_AUTH_SECRET=换成一串随机字符
-```
-
-修改后重启服务：
+部署前记录 previous Git commit，并保留 Nginx 备份和数据快照。如果代码或服务配置需要回滚：
 
 ```bash
+cd /opt/html-workbench
+PREVIOUS_COMMIT=<previous Git commit SHA>
+sudo systemctl stop html-workbench
+sudo systemctl stop html-workbench-content 2>/dev/null || true
+sudo git checkout --detach "$PREVIOUS_COMMIT"
+sudo npm ci --omit=dev
+sudo cp deploy/self-host/html-workbench.service /etc/systemd/system/html-workbench.service
+sudo systemctl disable html-workbench-content
+sudo cp /etc/nginx/conf.d/ho.wekki.fun.conf.pre-dual-service /etc/nginx/conf.d/ho.wekki.fun.conf
+sudo systemctl daemon-reload
 sudo systemctl restart html-workbench
+sudo nginx -t
+sudo systemctl reload nginx
 ```
+
+旧版 admin 不支持 leases；回滚后保持 content 停止，并在再次升级前重新执行 stop-the-world migration。只有在 schema/data 也必须回退时才从部署前快照恢复 `/var/lib/html-workbench`。
 
 ### GitHub Actions 自动部署
 
-仓库包含 `.github/workflows/deploy-self-host.yml`。配置好 GitHub Secrets 后，每次推送 `owncnd_codex/html` 分支都会自动连接服务器、拉取最新代码并重启 `html-workbench`。
-
-在 GitHub 仓库进入 `Settings` -> `Secrets and variables` -> `Actions`，新增这些 Repository secrets：
+`.github/workflows/deploy-self-host.yml` 在推送 `owncnd_codex/html` 时通过 SSH bootstrap checkout，然后调用仓库中的同一个 `deploy/self-host/deploy.sh`。需要 Repository secrets：
 
 ```text
 SERVER_HOST=163.7.4.158
 SERVER_USER=root
 SERVER_PORT=22
-SERVER_SSH_KEY=你的 SSH 私钥内容
+SERVER_SSH_KEY=<private key>
 ```
 
-`SERVER_PORT` 可选，不填默认 `22`。如果不用 root，请确保 `SERVER_USER` 对应用户可以免密执行 `sudo systemctl restart html-workbench` 等部署命令。
-
-建议单独创建一组部署密钥，把公钥加入服务器用户的 `~/.ssh/authorized_keys`，再把私钥内容放到 `SERVER_SSH_KEY`：
-
-```bash
-ssh-keygen -t ed25519 -f htmlworkbench_deploy_key -C github-actions-htmlworkbench
-ssh-copy-id -i htmlworkbench_deploy_key.pub root@163.7.4.158
-```
-
-工作流也支持这些 Repository variables，可不填：
+可选 Repository variables：
 
 ```text
 SERVER_APP_DIR=/opt/html-workbench
 SERVER_BRANCH=owncnd_codex/html
 SERVER_REPO_URL=https://github.com/wekkizhang-creator/HTMLWorkbench.git
 ```
+
+`SERVER_APP_DIR` 必须保持 `/opt/html-workbench`。非 root 部署用户必须能通过免密 sudo 执行部署脚本所需的 systemctl、systemd-run、文件安装和 Git 操作。

@@ -1,5 +1,5 @@
 services:
-  html-workbench:
+  admin:
     build: .
     image: html-workbench:local
     container_name: html-workbench
@@ -9,16 +9,61 @@ services:
         condition: service_completed_successfully
     environment:
       NODE_ENV: production
+      HTML_WORKBENCH_ROLE: admin
+      HOST: 0.0.0.0
       PORT: 3000
+      HEALTHCHECK_HOST: ho.wekki.fun
       HTML_WORKBENCH_DATA_DIR: /data
+      HTML_WORKBENCH_ADMIN_ORIGIN: https://ho.wekki.fun
+      HTML_WORKBENCH_PUBLIC_ORIGIN: https://page.wekki.fun
       HTML_WORKBENCH_PASSWORD: "${HTML_WORKBENCH_PASSWORD:?HTML_WORKBENCH_PASSWORD is required}"
       HTML_WORKBENCH_AUTH_SECRET: "${HTML_WORKBENCH_AUTH_SECRET:?HTML_WORKBENCH_AUTH_SECRET is required}"
+      HTML_WORKBENCH_DOWNLOAD_PASSWORD: "${HTML_WORKBENCH_DOWNLOAD_PASSWORD:?HTML_WORKBENCH_DOWNLOAD_PASSWORD is required}"
+      HTML_WORKBENCH_CURSOR_SECRET: "${HTML_WORKBENCH_CURSOR_SECRET:?HTML_WORKBENCH_CURSOR_SECRET is required}"
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
       - html-workbench-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || 3000) + '/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "require('node:http').get({hostname:'127.0.0.1',path:'/healthz',port:3000,headers:{Host:'ho.wekki.fun'}},(response)=>process.exit(response.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  content:
+    image: html-workbench:local
+    container_name: html-workbench-content
+    restart: unless-stopped
+    depends_on:
+      html-workbench-init:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      HTML_WORKBENCH_ROLE: content
+      HOST: 0.0.0.0
+      PORT: 3001
+      HEALTHCHECK_HOST: page.wekki.fun
+      HTML_WORKBENCH_DATA_DIR: /data
+      HTML_WORKBENCH_ADMIN_ORIGIN: https://ho.wekki.fun
+      HTML_WORKBENCH_PUBLIC_ORIGIN: https://page.wekki.fun
+    ports:
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - html-workbench-data:/data:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('node:http').get({hostname:'127.0.0.1',path:'/healthz',port:3001,headers:{Host:'page.wekki.fun'}},(response)=>process.exit(response.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       start_period: 10s
@@ -26,6 +71,7 @@ services:
 
   html-workbench-init:
     image: html-workbench:local
+    container_name: html-workbench-init
     user: root
     command: ["chown", "-R", "node:node", "/data"]
     restart: "no"

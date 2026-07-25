@@ -1,5 +1,5 @@
 [Unit]
-Description=HTMLWorkbench admin service
+Description=HTMLWorkbench public content service
 After=network.target
 
 [Service]
@@ -8,14 +8,14 @@ User=htmlworkbench
 Group=htmlworkbench
 WorkingDirectory=/opt/html-workbench
 Environment=NODE_ENV=production
-Environment=HTML_WORKBENCH_ROLE=admin
+Environment=HTML_WORKBENCH_ROLE=content
 Environment=HOST=127.0.0.1
-Environment=PORT=3000
+Environment=PORT=3001
 EnvironmentFile=/etc/html-workbench.env
-ExecStart=/usr/bin/env HTML_WORKBENCH_ROLE=admin HOST=127.0.0.1 PORT=3000 /usr/bin/node /opt/html-workbench/server.js
+ExecStart=/usr/bin/env HTML_WORKBENCH_ROLE=content HOST=127.0.0.1 PORT=3001 /usr/bin/node /opt/html-workbench/server.js
 Restart=always
 RestartSec=5
-UMask=0027
+UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
@@ -25,7 +25,7 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
-ReadWritePaths=/var/lib/html-workbench
+ReadOnlyPaths=/var/lib/html-workbench
 
 [Install]
 WantedBy=multi-user.target

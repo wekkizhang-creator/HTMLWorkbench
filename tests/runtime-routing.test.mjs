@@ -127,6 +127,7 @@ test("runtime configuration recognizes role hosts and role routes", async () => 
     });
     assert.equal(isAllowedHost("page.wekki.fun", "content"), true);
     assert.equal(isAllowedHost("ho.wekki.fun", "content"), false);
+    assert.equal(isRouteAllowed("content", "/healthz"), true);
     assert.equal(isRouteAllowed("content", `/view/${TEST_RECORD_ID}`), true);
     assert.equal(isRouteAllowed("content", "/api/uploads"), false);
   });
@@ -138,6 +139,7 @@ test("content role exposes view routes but rejects admin APIs", async () => {
     HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun"
   });
   try {
+    assert.equal((await request(server.origin, "/healthz", "page.wekki.fun")).status, 200);
     assert.equal((await request(server.origin, "/api/uploads", "page.wekki.fun")).status, 404);
     for (const pathname of ["/api/auth", "/api/download", "/index.html", "/styles.css"]) {
       assert.equal((await request(server.origin, pathname, "page.wekki.fun")).status, 404);
