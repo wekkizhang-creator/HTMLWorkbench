@@ -12,6 +12,7 @@ Environment=HTML_WORKBENCH_ROLE=admin
 Environment=HOST=127.0.0.1
 Environment=PORT=3000
 EnvironmentFile=/etc/html-workbench.env
+ExecStartPre=/usr/bin/node /opt/html-workbench/current/deploy/self-host/validate-env.mjs
 ExecStart=/usr/bin/env NODE_ENV=production HTML_WORKBENCH_ROLE=admin HOST=127.0.0.1 PORT=3000 /usr/bin/node /opt/html-workbench/current/server.js
 Restart=always
 RestartSec=5

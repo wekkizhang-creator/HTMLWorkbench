@@ -20,4 +20,5 @@ EXPOSE 3000 3001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["node", "-e", "const http=require('node:http');const port=Number(process.env.PORT||3000);const request=http.get({hostname:'127.0.0.1',path:'/healthz',port,headers:{Host:process.env.HEALTHCHECK_HOST||('localhost:'+port)}},(response)=>process.exit(response.statusCode>=200&&response.statusCode<300?0:1));request.setTimeout(4000,()=>request.destroy());request.on('error',()=>process.exit(1));"]
 
+ENTRYPOINT ["node", "deploy/container-entrypoint.mjs"]
 CMD ["node", "server.js"]

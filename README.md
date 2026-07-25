@@ -67,7 +67,7 @@ HTML_WORKBENCH_DOWNLOAD_PASSWORD=<separate download password>
 HTML_WORKBENCH_CURSOR_SECRET=<random cursor-signing secret>
 ```
 
-Do not commit real credentials. All four credentials are required and must be explicitly configured and non-empty so runtime code cannot silently use fallback values. The required management and download value `885688` is valid when it is explicitly present in the environment file. The deploy preflight uses `systemd-run` with `EnvironmentFile=/etc/html-workbench.env`, so systemd quote handling and duplicate-key last-wins behavior are validated before either service is stopped.
+Do not commit real credentials. All four credentials are required and must be explicitly configured and non-empty so runtime code cannot silently use fallback values. Public `change-this-*` placeholders are rejected. The required management and download value `885688` is valid when it is explicitly present in the environment file. The deploy preflight uses `systemd-run` with `EnvironmentFile=/etc/html-workbench.env`, so systemd quote handling and duplicate-key last-wins behavior are validated before either service is stopped. Both systemd units run the same validator through `ExecStartPre` on every start.
 
 ### Managed Nginx configuration
 
@@ -173,7 +173,7 @@ sudo nginx -t
 
 ### Docker Compose
 
-Create an untracked `.env` containing all four credentials listed above. Compose retains the root-owned one-shot volume initializer, then runs a read/write `migration` service. Both admin and content depend on `migration: service_completed_successfully`, so neither can start when migration exits unsuccessfully. Admin publishes only `127.0.0.1:3000`; content publishes only `127.0.0.1:3001` and mounts `/data` read-only.
+Create an untracked `.env` containing all four credentials listed above. Missing, empty, and public `change-this-*` placeholder values are rejected by the image entrypoint before every migration, admin, or content command; explicitly configured `885688` remains valid. Compose retains the root-owned one-shot volume initializer, then runs a read/write `migration` service. Both admin and content depend on `migration: service_completed_successfully`, so neither can start when migration exits unsuccessfully. Admin publishes only `127.0.0.1:3000`; content publishes only `127.0.0.1:3001` and mounts `/data` read-only.
 
 For a cross-version update, preserve the same stop-the-world boundary:
 

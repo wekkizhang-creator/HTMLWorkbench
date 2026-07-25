@@ -361,6 +361,10 @@ test("systemd units run the atomically activated current release", async () => {
     assert.match(service, /^WorkingDirectory=\/opt\/html-workbench\/current$/m);
     assert.match(service, /\/opt\/html-workbench\/current\/server\.js/);
     assert.match(service, /^EnvironmentFile=\/etc\/html-workbench\.env$/m);
+    assert.match(
+      service,
+      /^ExecStartPre=\/usr\/bin\/node \/opt\/html-workbench\/current\/deploy\/self-host\/validate-env\.mjs$/m
+    );
   }
   assert.match(admin, /^Environment=HTML_WORKBENCH_ROLE=admin$/m);
   assert.match(admin, /^Environment=HOST=127\.0\.0\.1$/m);

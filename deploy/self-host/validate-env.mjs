@@ -1,9 +1,16 @@
 import { fileURLToPath } from "node:url";
 
 const REQUIRED_VALUES = Object.freeze({
-  HTML_WORKBENCH_DATA_DIR: "/var/lib/html-workbench",
-  HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",
-  HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun"
+  host: Object.freeze({
+    HTML_WORKBENCH_DATA_DIR: "/var/lib/html-workbench",
+    HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",
+    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun"
+  }),
+  container: Object.freeze({
+    HTML_WORKBENCH_DATA_DIR: "/data",
+    HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",
+    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun"
+  })
 });
 
 const REQUIRED_SECRETS = Object.freeze([
@@ -80,8 +87,10 @@ export function parseSystemdEnvironmentFile(contents) {
   return environment;
 }
 
-export function validateEffectiveEnvironment(environment = process.env) {
-  for (const [name, expected] of Object.entries(REQUIRED_VALUES)) {
+export function validateEffectiveEnvironment(environment = process.env, { profile = "host" } = {}) {
+  const requiredValues = REQUIRED_VALUES[profile];
+  if (!requiredValues) throw new Error(`Unknown production environment profile: ${profile}`);
+  for (const [name, expected] of Object.entries(requiredValues)) {
     if (environment[name] !== expected) {
       throw new Error(`${name} must be exactly ${expected}`);
     }

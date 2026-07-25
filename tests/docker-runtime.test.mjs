@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import test from "node:test";
 
@@ -57,6 +58,32 @@ function serviceCanStart(service, completedServices) {
   );
 }
 
+function containerEnvironment(overrides = {}) {
+  const environment = {
+    ...process.env,
+    NODE_ENV: "production",
+    HTML_WORKBENCH_DATA_DIR: "/data",
+    HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",
+    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun",
+    HTML_WORKBENCH_PASSWORD: "885688",
+    HTML_WORKBENCH_AUTH_SECRET: "production auth secret",
+    HTML_WORKBENCH_DOWNLOAD_PASSWORD: "885688",
+    HTML_WORKBENCH_CURSOR_SECRET: "production cursor secret",
+    ...overrides
+  };
+  for (const [name, value] of Object.entries(environment)) {
+    if (value === undefined) delete environment[name];
+  }
+  return environment;
+}
+
+function runContainerEntrypoint(entrypoint, overrides = {}) {
+  return spawnSync(
+    process.execPath,
+    [entrypoint, process.execPath, "-e", "process.exit(0)"],
+    { encoding: "utf8", env: containerEnvironment(overrides) }
+  );
+}
 test("Dockerfile installs locked production dependencies and supports both roles", async () => {
   const dockerfile = await fs.readFile(DOCKERFILE_PATH, "utf8");
   const healthcheck = dockerfile.split(/\r?\n/).find((line) => line.startsWith("HEALTHCHECK "));
@@ -70,6 +97,25 @@ test("Dockerfile installs locked production dependencies and supports both roles
   assert.match(healthcheck, /process\.env\.HEALTHCHECK_HOST/);
 });
 
+test("Docker entrypoint validates credentials before every service command", async () => {
+  const dockerfile = await fs.readFile(DOCKERFILE_PATH, "utf8");
+  const entrypointMatch = dockerfile.match(/^ENTRYPOINT \["node", "([^"]+)"\]\s*$/m);
+  assert.ok(entrypointMatch, "Dockerfile must install the production validation entrypoint");
+
+  const valid = runContainerEntrypoint(entrypointMatch[1]);
+  assert.equal(valid.status, 0, valid.stderr);
+
+  for (const [name, value] of [
+    ["HTML_WORKBENCH_PASSWORD", undefined],
+    ["HTML_WORKBENCH_DOWNLOAD_PASSWORD", ""],
+    ["HTML_WORKBENCH_AUTH_SECRET", "change-this-auth-secret"],
+    ["HTML_WORKBENCH_CURSOR_SECRET", "change-this-cursor-secret"]
+  ]) {
+    const result = runContainerEntrypoint(entrypointMatch[1], { [name]: value });
+    assert.notEqual(result.status, 0, `${name} unexpectedly passed validation`);
+    assert.match(result.stderr, new RegExp(name));
+  }
+});
 test("migration failure blocks both long-running Compose roles", async () => {
   const services = parseComposeServices(await fs.readFile(COMPOSE_PATH, "utf8"));
   for (const name of ["html-workbench-init", "migration", "admin", "content"]) {
@@ -105,7 +151,7 @@ test("Compose migration writes shared data while content mounts it read-only", a
   assert.match(content, /^\s*-\s*html-workbench-data:\/data:ro\s*$/m);
 });
 
-test("Compose uses role-specific healthchecks and requires all migration credentials", async () => {
+test("Compose uses role-specific healthchecks and requires credentials for every application role", async () => {
   const services = parseComposeServices(await fs.readFile(COMPOSE_PATH, "utf8"));
   const migration = services.get("migration")?.source || "";
   const admin = services.get("admin")?.source || "";
@@ -122,5 +168,7 @@ test("Compose uses role-specific healthchecks and requires all migration credent
     "HTML_WORKBENCH_CURSOR_SECRET"
   ]) {
     assert.match(migration, new RegExp(`${name}:\\s*["']?\\$\\{${name}:\\?[^}\\r\\n]+\\}["']?`));
+    assert.match(admin, new RegExp(`${name}:\\s*["']?\\$\\{${name}:\\?[^}\\r\\n]+\\}["']?`));
+    assert.match(content, new RegExp(`${name}:\\s*["']?\\$\\{${name}:\\?[^}\\r\\n]+\\}["']?`));
   }
 });
