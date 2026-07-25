@@ -159,11 +159,16 @@ function createCachedOriginBlobSdk(initialEntries) {
   };
 }
 
-function createLeaseCleanupFailureBlobSdk({ operationError, cleanupError }) {
+function createLeaseCleanupFailureBlobSdk({
+  operationError,
+  cleanupError,
+  cleanupReadError
+}) {
   const leases = new Map();
   let sequence = 0;
 
   return {
+    leases,
     async put(storagePath, body, options = {}) {
       if (options.allowOverwrite === false && leases.has(storagePath)) {
         const error = new Error("Blob already exists");
@@ -180,6 +185,7 @@ function createLeaseCleanupFailureBlobSdk({ operationError, cleanupError }) {
     async get(storagePath) {
       const entry = leases.get(storagePath);
       if (entry) {
+        if (cleanupReadError) throw cleanupReadError;
         return {
           statusCode: 200,
           stream: new Blob([entry.body]).stream(),
@@ -192,11 +198,83 @@ function createLeaseCleanupFailureBlobSdk({ operationError, cleanupError }) {
       return null;
     },
     async del(storagePath) {
-      if (storagePath.startsWith(READER_LEASE_PREFIX)) throw cleanupError;
+      if (storagePath.startsWith(READER_LEASE_PREFIX) && cleanupError) throw cleanupError;
       leases.delete(storagePath);
     },
     async list() {
       return { blobs: [], cursor: undefined, hasMore: false };
+    }
+  };
+}
+
+function createMaintenanceCleanupBlobSdk({ heartbeatError, deleteError }) {
+  const record = recordAt("2026-06-01T00:00:00.000Z", 900);
+  const index = buildRecordIndexDocument(record);
+  const entries = new Map([
+    [record.recordPath, { body: JSON.stringify(record), etag: "v1" }],
+    [index.indexPath, { body: JSON.stringify(index), etag: "v2" }]
+  ]);
+  let sequence = 2;
+  let deleteAttempted = false;
+  let signalHeartbeatFailure;
+  const heartbeatFailed = new Promise((resolve) => {
+    signalHeartbeatFailure = resolve;
+  });
+
+  return {
+    heartbeatFailed,
+    get deleteAttempted() {
+      return deleteAttempted;
+    },
+    get maintenancePresent() {
+      return entries.has(MAINTENANCE_LOCK_PATH);
+    },
+    async put(storagePath, body, options = {}) {
+      if (storagePath === MAINTENANCE_LOCK_PATH && options.ifMatch) {
+        signalHeartbeatFailure();
+        throw heartbeatError;
+      }
+      if (options.allowOverwrite === false && entries.has(storagePath)) {
+        const error = new Error("Blob already exists");
+        error.status = 409;
+        throw error;
+      }
+      const entry = {
+        body: typeof body === "string" ? body : Buffer.from(body).toString("utf8"),
+        etag: `v${++sequence}`
+      };
+      entries.set(storagePath, entry);
+      return { pathname: storagePath, etag: entry.etag };
+    },
+    async get(storagePath) {
+      const entry = entries.get(storagePath);
+      if (!entry) return null;
+      return {
+        statusCode: 200,
+        stream: new Blob([entry.body]).stream(),
+        blob: { etag: entry.etag },
+        headers: new Headers({ etag: entry.etag })
+      };
+    },
+    async del(storagePath) {
+      if (storagePath === MAINTENANCE_LOCK_PATH) {
+        deleteAttempted = true;
+        if (deleteError) throw deleteError;
+      }
+      entries.delete(storagePath);
+    },
+    async list({ cursor, limit = 1000, prefix }) {
+      const paths = [...entries.keys()]
+        .filter((storagePath) => storagePath.startsWith(prefix))
+        .sort();
+      const start = Number(cursor || 0);
+      const page = paths.slice(start, start + limit);
+      const next = start + page.length;
+      return {
+        blobs: page.map((pathname) => ({ pathname })),
+        cursor: next < paths.length ? String(next) : undefined,
+        hasMore: next < paths.length
+      };
     }
   };
 }
@@ -1026,6 +1104,155 @@ test("reader lease cleanup failure rejects after a successful operation", async 
       }),
       (error) => error === cleanupError
     );
+  });
+});
+
+test("Blob lease snapshot read failure rejects success and leaves the lease visible", async () => {
+  await withLocalStorage(async ({ storage }) => {
+    const cleanupReadError = new Error("Blob lease read failed");
+    const blobSdk = createLeaseCleanupFailureBlobSdk({ cleanupReadError });
+
+    await assert.rejects(
+      () => storage.listRecordsPage({
+        blobSdk,
+        limit: 50,
+        cursor: null,
+        query: "",
+        documentType: ""
+      }),
+      (error) => error === cleanupReadError
+    );
+    assert.equal(
+      [...blobSdk.leases.keys()].some((storagePath) => storagePath.startsWith(READER_LEASE_PREFIX)),
+      true
+    );
+  });
+});
+
+test("Blob lease snapshot read failure attaches to a primary reader error", async () => {
+  await withLocalStorage(async ({ storage }) => {
+    const operationError = new Error("Blob indexed read failed");
+    const cleanupReadError = new Error("Blob lease read failed");
+    const blobSdk = createLeaseCleanupFailureBlobSdk({
+      operationError,
+      cleanupReadError
+    });
+
+    await assert.rejects(
+      () => storage.listRecordsPage({
+        blobSdk,
+        limit: 50,
+        cursor: null,
+        query: "",
+        documentType: ""
+      }),
+      (error) => {
+        assert.equal(error, operationError);
+        assert.equal(error.cleanupError, cleanupReadError);
+        return true;
+      }
+    );
+    assert.equal(
+      [...blobSdk.leases.keys()].some((storagePath) => storagePath.startsWith(READER_LEASE_PREFIX)),
+      true
+    );
+  });
+});
+
+test("local lease parse failure rejects success and leaves the lease visible", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    let leasePath;
+    await assert.rejects(
+      () => storage.withRecordMutation(async () => {
+        const [leaseFile] = await listLeaseFiles(dataDir, WRITER_LEASE_PREFIX);
+        leasePath = path.join(
+          dataDir,
+          ...WRITER_LEASE_PREFIX.replace(/\/$/, "").split("/"),
+          leaseFile
+        );
+        await fs.writeFile(leasePath, "{broken-json", "utf8");
+        return "saved";
+      }),
+      (error) => error instanceof SyntaxError
+    );
+    await fs.access(leasePath);
+  });
+});
+
+test("local lease parse failure attaches to a primary writer error", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    const operationError = new Error("local indexed mutation failed");
+    let leasePath;
+    await assert.rejects(
+      () => storage.withRecordMutation(async () => {
+        const [leaseFile] = await listLeaseFiles(dataDir, WRITER_LEASE_PREFIX);
+        leasePath = path.join(
+          dataDir,
+          ...WRITER_LEASE_PREFIX.replace(/\/$/, "").split("/"),
+          leaseFile
+        );
+        await fs.writeFile(leasePath, "{broken-json", "utf8");
+        throw operationError;
+      }),
+      (error) => {
+        assert.equal(error, operationError);
+        assert.equal(error.cleanupError instanceof SyntaxError, true);
+        return true;
+      }
+    );
+    await fs.access(leasePath);
+  });
+});
+
+test("migration preserves its primary error and attempts delete after heartbeat cleanup fails", async () => {
+  await withLocalStorage(async ({ storage }) => {
+    const operationError = new Error("migration progress failed");
+    const heartbeatError = new Error("maintenance heartbeat failed");
+    const deleteError = new Error("maintenance delete failed");
+    const blobSdk = createMaintenanceCleanupBlobSdk({ heartbeatError, deleteError });
+
+    await assert.rejects(
+      () => storage.migrateRecordIndex({
+        blobSdk,
+        dryRun: true,
+        leaseHeartbeatMs: 5,
+        leaseTtlMs: 30,
+        async onProgress() {
+          await blobSdk.heartbeatFailed;
+          throw operationError;
+        }
+      }),
+      (error) => {
+        assert.equal(error, operationError);
+        assert.equal(error.cleanupError instanceof AggregateError, true);
+        assert.deepEqual(error.cleanupError.errors, [heartbeatError, deleteError]);
+        return true;
+      }
+    );
+    assert.equal(blobSdk.deleteAttempted, true);
+    assert.equal(blobSdk.maintenancePresent, true);
+  });
+});
+
+test("successful migration rejects heartbeat cleanup failure after deleting maintenance", async () => {
+  await withLocalStorage(async ({ storage }) => {
+    const heartbeatError = new Error("maintenance heartbeat failed");
+    const blobSdk = createMaintenanceCleanupBlobSdk({ heartbeatError });
+
+    await assert.rejects(
+      () => storage.migrateRecordIndex({
+        blobSdk,
+        dryRun: true,
+        leaseHeartbeatMs: 5,
+        leaseTtlMs: 30,
+        async onProgress() {
+          await blobSdk.heartbeatFailed;
+        }
+      }),
+      (error) => error === heartbeatError
+    );
+    assert.equal(blobSdk.deleteAttempted, true);
+    assert.equal(blobSdk.maintenancePresent, false);
   });
 });
 
