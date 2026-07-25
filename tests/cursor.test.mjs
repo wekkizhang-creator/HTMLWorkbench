@@ -10,6 +10,7 @@ test("cursor round-trips and is bound to filters", () => {
   const state = {
     version: 1,
     storageCursor: "blob-next",
+    generation: "generation-a",
     query: "report",
     documentType: "analysis"
   };
@@ -41,6 +42,7 @@ test("tampered cursors are rejected as bad requests", () => {
   const cursor = encodePageCursor({
     version: 1,
     storageCursor: null,
+    generation: "generation-a",
     query: "",
     documentType: ""
   });
@@ -52,7 +54,7 @@ test("tampered cursors are rejected as bad requests", () => {
 test("production cursor operations require the dedicated secret", () => {
   const previousNodeEnv = process.env.NODE_ENV;
   const previousSecret = process.env.HTML_WORKBENCH_CURSOR_SECRET;
-  const state = { version: 1, storageCursor: null, query: "", documentType: "" };
+  const state = { version: 1, generation: "generation-a", storageCursor: null, query: "", documentType: "" };
   const isMissingSecretError = (error) => (
     error.status === 500
     && error.code === "cursor_secret_required"
@@ -79,7 +81,7 @@ test("production cursor operations require the dedicated secret", () => {
 test("an explicit cursor secret supports round-trip", () => {
   const previousSecret = process.env.HTML_WORKBENCH_CURSOR_SECRET;
   process.env.HTML_WORKBENCH_CURSOR_SECRET = "explicit-test-secret";
-  const state = { version: 1, storageCursor: "next", query: "report", documentType: "analysis" };
+  const state = { version: 1, generation: "generation-a", storageCursor: "next", query: "report", documentType: "analysis" };
   try {
     assert.deepEqual(decodePageCursor(encodePageCursor(state), state), state);
   } finally {

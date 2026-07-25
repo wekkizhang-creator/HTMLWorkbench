@@ -76,7 +76,7 @@ async function seedLocalIndex(dataDir, records, { ready = true } = {}) {
     await fs.mkdir(path.join(dataDir, "record-index-state"), { recursive: true });
     await fs.writeFile(
       path.join(dataDir, "record-index-state", "v1-ready.json"),
-      `${JSON.stringify({ version: 1, completedAt: "2026-07-24T00:00:00.000Z" })}\n`,
+      `${JSON.stringify({ version: 1, completedAt: "2026-07-24T00:00:00.000Z", generation: "seed-generation" })}\n`,
       "utf8"
     );
   }
@@ -614,4 +614,160 @@ test("upload mutation routes use indexed record writes", async () => {
   assert.doesNotMatch(uploadsSource, /\bsaveRecord\b/);
   assert.match(mutationSource, /saveIndexedRecord/);
   assert.doesNotMatch(mutationSource, /\bsaveRecord\b/);
+});
+
+
+test("concurrent replacements serialize and leave one canonical index", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    const secondStorage = await import(`../lib/storage.mjs?concurrent-replace-test=${randomUUID()}`);
+    const original = recordAt("2026-01-01T00:00:00.000Z", 81);
+    const savedOriginal = await storage.saveIndexedRecord(original);
+    const firstReplacement = {
+      ...savedOriginal,
+      title: "Concurrent A",
+      uploadedAt: "2026-07-25T00:00:00.000Z"
+    };
+    const secondReplacement = {
+      ...savedOriginal,
+      title: "Concurrent B",
+      uploadedAt: "2026-07-26T00:00:00.000Z"
+    };
+
+    await Promise.all([
+      storage.saveIndexedRecord(firstReplacement, savedOriginal),
+      secondStorage.saveIndexedRecord(secondReplacement, savedOriginal)
+    ]);
+
+    const canonical = await storage.getRecord(original.id);
+    const indexPaths = await listIndexPaths(dataDir);
+    assert.equal(indexPaths.length, 1);
+    assert.equal(indexPaths[0], buildRecordIndexPath(canonical));
+    const page = await storage.listRecordsPage({
+      limit: 10,
+      cursor: null,
+      query: "",
+      documentType: ""
+    });
+    assert.deepEqual(page.records.map((record) => record.id), [original.id]);
+  });
+});
+
+test("a cursor is rejected after a later mutation changes index generation", async () => {
+  await withLocalStorage(async ({ storage }) => {
+    const records = [
+      recordAt("2026-01-01T00:00:00.000Z", 91),
+      recordAt("2026-01-02T00:00:00.000Z", 92),
+      recordAt("2026-01-03T00:00:00.000Z", 93)
+    ];
+    const saved = [];
+    for (const record of records) saved.push(await storage.saveIndexedRecord(record));
+    const first = await storage.listRecordsPage({
+      limit: 1,
+      cursor: null,
+      query: "",
+      documentType: ""
+    });
+    assert.ok(first.page.nextCursor);
+
+    await storage.saveIndexedRecord({
+      ...saved[0],
+      title: "Moved before the cursor",
+      uploadedAt: "2026-07-26T00:00:00.000Z"
+    }, saved[0]);
+
+    await assert.rejects(
+      () => storage.listRecordsPage({
+        limit: 1,
+        cursor: first.page.nextCursor,
+        query: "",
+        documentType: ""
+      }),
+      (error) => error.status === 409 && error.code === "record_index_changed"
+    );
+  });
+});
+
+test("a generation change during Blob listing rejects the page", async () => {
+  const record = recordAt("2026-07-26T00:00:00.000Z", 94);
+  const index = buildRecordIndexDocument({
+    ...record,
+    recordPath: `records/${record.id}.json`
+  });
+  let blobSdk;
+  blobSdk = createMemoryBlobSdk({
+    [index.indexPath]: index,
+    "record-index-state/v1-ready.json": {
+      version: 1,
+      completedAt: "2026-07-26T00:00:00.000Z",
+      generation: "generation-before"
+    }
+  }, {
+    beforeFirstIndexList() {
+      blobSdk.store.set("record-index-state/v1-ready.json", JSON.stringify({
+        version: 1,
+        completedAt: "2026-07-26T00:00:00.000Z",
+        generation: "generation-after"
+      }));
+    }
+  });
+
+  await withLocalStorage(async ({ storage }) => {
+    await assert.rejects(
+      () => storage.listRecordsPage({
+        blobSdk,
+        limit: 1,
+        cursor: null,
+        query: "",
+        documentType: ""
+      }),
+      (error) => error.status === 409 && error.code === "record_index_changed"
+    );
+  });
+});
+
+
+test("Blob writers share one lock and an expired lock fails closed", async () => {
+  await withLocalStorage(async ({ storage }) => {
+    const secondStorage = await import(`../lib/storage.mjs?blob-writer-lock-test=${randomUUID()}`);
+    const blobSdk = createMemoryBlobSdk({});
+    let releaseFirst;
+    let firstEntered;
+    const entered = new Promise((resolve) => { firstEntered = resolve; });
+    const hold = new Promise((resolve) => { releaseFirst = resolve; });
+    let secondEntered = false;
+
+    const first = storage.withRecordMutation(async () => {
+      firstEntered();
+      await hold;
+    }, { blobSdk, leaseHeartbeatMs: 20, leaseTtlMs: 200 });
+    await entered;
+    const second = secondStorage.withRecordMutation(async () => {
+      secondEntered = true;
+    }, {
+      blobSdk,
+      leaseHeartbeatMs: 20,
+      leasePollIntervalMs: 5,
+      leaseTtlMs: 200,
+      leaseWaitTimeoutMs: 1000
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(secondEntered, false);
+    releaseFirst();
+    await Promise.all([first, second]);
+    assert.equal(secondEntered, true);
+    assert.equal(blobSdk.store.has("record-index-state/v1-leases/writers/active.json"), false);
+
+    blobSdk.store.set("record-index-state/v1-leases/writers/active.json", JSON.stringify({
+      version: 1,
+      owner: "abandoned-owner",
+      kind: "writer",
+      expiresAt: "2020-01-01T00:00:00.000Z",
+      path: "record-index-state/v1-leases/writers/active.json"
+    }));
+    await assert.rejects(
+      () => storage.withRecordMutation(async () => {}, { blobSdk }),
+      (error) => error.status === 503 && error.code === "record_writer_lease_expired"
+    );
+  });
 });

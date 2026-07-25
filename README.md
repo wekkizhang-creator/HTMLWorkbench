@@ -126,6 +126,8 @@ sudo env DEPLOY_SHA="$DEPLOY_SHA" \
 
 After preparation, deployment records the prior service state, stops both roles, runs the live record-index migration from the staged release, activates `/opt/html-workbench/current`, installs the units and managed Nginx files, validates Nginx, starts both services, verifies both loopback health endpoints, and reloads Nginx.
 
+Record mutations share a single owner-checked writer lease in local and Blob storage. Pagination cursors are signed and bound to the current index generation; if records change between pages or during a page read, the list API returns `409 record_index_changed` so clients refresh instead of silently skipping or duplicating records.
+
 ### Migration gate and recovery
 
 The first upgrade from the pre-lease version is strictly **stop-the-world**. The old admin does not use writer leases, so admin and content must both be stopped before every dry-run, live migration, or explicit recovery. Never run these commands while an old admin can accept writes.
