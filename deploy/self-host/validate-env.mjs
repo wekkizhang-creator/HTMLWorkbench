@@ -92,9 +92,6 @@ export function validateEffectiveEnvironment(environment = process.env) {
       throw new Error(`${name} must be a non-empty production credential`);
     }
   }
-  if (environment.HTML_WORKBENCH_PASSWORD === "885688") {
-    throw new Error("HTML_WORKBENCH_PASSWORD must not use the legacy fallback credential");
-  }
   return true;
 }
 

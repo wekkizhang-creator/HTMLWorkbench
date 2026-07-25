@@ -117,12 +117,37 @@ async function restoreLink(linkPath, target) {
 
 async function serviceLoaded(run, service) {
   const result = await run("systemctl", ["show", "--property=LoadState", "--value", service]);
-  return result.code === 0 && String(result.stdout).trim() !== "not-found";
+  const state = String(result.stdout).trim();
+  if (state === "not-found") return false;
+  if (result.code !== 0) {
+    const detail = String(result.stderr || result.stdout || "").trim();
+    throw new Error(detail || `systemctl show failed with status ${result.code}`);
+  }
+  if (!state) throw new Error(`systemctl show returned no LoadState for ${service}`);
+  return true;
 }
 
 async function serviceFlag(run, operation, service) {
-  const result = await run("systemctl", [operation, "--quiet", service]);
-  return result.code === 0;
+  const result = await run("systemctl", [operation, service]);
+  const state = String(result.stdout).trim().toLowerCase();
+  const activeStates = new Set(["active", "reloading"]);
+  const enabledStates = new Set(["enabled", "enabled-runtime", "linked", "linked-runtime", "alias"]);
+  const disabledStates = new Set([
+    "disabled", "disabled-runtime", "masked", "masked-runtime", "static",
+    "indirect", "generated", "transient", "not-found"
+  ]);
+
+  if (operation === "is-active") {
+    if (result.code === 0 && activeStates.has(state)) return true;
+    if (result.code === 3 && (state === "inactive" || state === "failed")) return false;
+    if (result.code === 4 && (state === "not-found" || state === "unknown")) return false;
+  } else if (operation === "is-enabled") {
+    if (enabledStates.has(state) && result.code === 0) return true;
+    if (disabledStates.has(state)) return false;
+  }
+
+  const detail = String(result.stderr || result.stdout || "").trim();
+  throw new Error(detail || `systemctl ${operation} returned unexpected state for ${service}`);
 }
 
 async function captureServiceState(run) {
@@ -137,9 +162,9 @@ async function captureServiceState(run) {
   return state;
 }
 
-async function restoreEnableState(run, state) {
+async function restoreEnableState(run, state, migrationFailed) {
   for (const service of SERVICE_NAMES) {
-    const expected = state.get(service).enabled;
+    const expected = service === CONTENT_SERVICE && migrationFailed ? false : state.get(service).enabled;
     await run("systemctl", [expected ? "enable" : "disable", service]);
     const actual = await serviceFlag(run, "is-enabled", service);
     if (actual !== expected) throw new Error(`Could not restore ${service} enabled state to ${expected}`);
@@ -257,15 +282,18 @@ async function transactionSnapshot(paths) {
 
 async function restoreTransaction({ paths, run, serviceState, snapshot, migrationFailed, log }) {
   for (const service of SERVICE_NAMES) await run("systemctl", ["stop", service]);
-  await restoreEnableState(run, serviceState);
+  await restoreEnableState(run, serviceState, migrationFailed);
   await restoreLink(paths.currentLink, snapshot.currentTarget);
   for (const [filePath, fileSnapshot] of snapshot.files) await restoreFile(filePath, fileSnapshot);
   await checked(run, "systemctl", ["daemon-reload"]);
   await checked(run, "nginx", ["-t"]);
   await checked(run, "systemctl", ["reload", "nginx"]);
   await restoreActiveState(run, serviceState, migrationFailed);
+  if (serviceState.get(ADMIN_SERVICE).active) {
+    await checkHealth(run, ADMIN_SERVICE, 3000, "ho.wekki.fun");
+  }
   log("Rollback restored the previous release and managed configuration; data state requires operator review before retrying.");
-  if (migrationFailed) log("Migration failed: content remains stopped. Never run explicit lock recovery without operator confirmation that no migration is active.");
+  if (migrationFailed) log("Migration failed: content remains stopped and disabled. Never run explicit lock recovery without operator confirmation that no migration is active.");
 }
 
 export async function deployRelease({

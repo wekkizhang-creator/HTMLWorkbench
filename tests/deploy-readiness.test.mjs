@@ -52,9 +52,9 @@ function validEnvironmentFile() {
 HTML_WORKBENCH_ADMIN_ORIGIN="https://ho.wekki.fun"
 HTML_WORKBENCH_PUBLIC_ORIGIN='https://page.wekki.fun'
 HTML_WORKBENCH_PASSWORD=old-value
-HTML_WORKBENCH_PASSWORD="production admin password"
+HTML_WORKBENCH_PASSWORD="885688"
 HTML_WORKBENCH_AUTH_SECRET='production auth secret'
-HTML_WORKBENCH_DOWNLOAD_PASSWORD="production download password"
+HTML_WORKBENCH_DOWNLOAD_PASSWORD="885688"
 HTML_WORKBENCH_CURSOR_SECRET='production cursor secret'
 `;
 }
@@ -77,6 +77,7 @@ async function createHarness(options = {}) {
     active: new Map([[ADMIN_SERVICE, options.adminActive ?? true], [CONTENT_SERVICE, options.contentActive ?? true]]),
     enabled: new Map([[ADMIN_SERVICE, options.adminEnabled ?? true], [CONTENT_SERVICE, options.contentEnabled ?? true]])
   };
+  const activationObserved = {};
 
   await fs.mkdir(paths.appDir, { recursive: true });
   await writeFile(path.join(paths.appDir, "legacy-sentinel.txt"), "legacy checkout remains untouched");
@@ -99,12 +100,23 @@ async function createHarness(options = {}) {
     if (command === "git" && args[0] === "checkout") await copyReleaseFixture(runOptions.cwd);
     if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: `${DEPLOY_SHA}\n`, stderr: "" };
     if (command === "systemctl" && args[0] === "is-active") {
-      return { code: serviceState.active.get(args.at(-1)) ? 0 : 3, stdout: "", stderr: "" };
+      if (options.systemctlIsActiveFails && args.at(-1) === ADMIN_SERVICE) {
+        return { code: 1, stdout: "", stderr: "Failed to connect to bus" };
+      }
+      const active = serviceState.active.get(args.at(-1));
+      return { code: active ? 0 : 3, stdout: active ? "active\n" : "inactive\n", stderr: "" };
     }
     if (command === "systemctl" && args[0] === "is-enabled") {
-      return { code: serviceState.enabled.get(args.at(-1)) ? 0 : 1, stdout: "", stderr: "" };
+      if (options.systemctlIsEnabledFails && args.at(-1) === ADMIN_SERVICE) {
+        return { code: 1, stdout: "", stderr: "Failed to connect to bus" };
+      }
+      const enabled = serviceState.enabled.get(args.at(-1));
+      return { code: enabled ? 0 : 1, stdout: enabled ? "enabled\n" : "disabled\n", stderr: "" };
     }
     if (command === "systemctl" && args[0] === "show") {
+      if (options.systemctlShowFails && args.at(-1) === ADMIN_SERVICE) {
+        return { code: 1, stdout: "", stderr: "Failed to connect to bus" };
+      }
       const unitPath = args.at(-1) === ADMIN_SERVICE ? paths.adminUnit : paths.contentUnit;
       return { code: 0, stdout: (await exists(unitPath)) ? "loaded\n" : "not-found\n", stderr: "" };
     }
@@ -126,13 +138,25 @@ async function createHarness(options = {}) {
     }
     if (command === "nginx" && args[0] === "-t") {
       nginxTestCount += 1;
-      if (options.activationFails && nginxTestCount === 1) return { code: 1, stdout: "", stderr: "invalid staged nginx" };
+      if (options.postStartNginxFails && nginxTestCount === 2) {
+        activationObserved.currentTarget = await fs.readlink(paths.currentLink);
+        activationObserved.adminUnit = await fs.readFile(paths.adminUnit, "utf8");
+        activationObserved.contentUnit = await fs.readFile(paths.contentUnit, "utf8");
+        activationObserved.nginxHost = await fs.readFile(paths.nginxHost, "utf8");
+        activationObserved.adminSnippet = await fs.readFile(paths.adminSnippet, "utf8");
+        activationObserved.contentSnippet = await fs.readFile(paths.contentSnippet, "utf8");
+        activationObserved.adminActive = serviceState.active.get(ADMIN_SERVICE);
+        activationObserved.contentActive = serviceState.active.get(CONTENT_SERVICE);
+        activationObserved.adminEnabled = serviceState.enabled.get(ADMIN_SERVICE);
+        activationObserved.contentEnabled = serviceState.enabled.get(CONTENT_SERVICE);
+        return { code: 1, stdout: "", stderr: "invalid final nginx" };
+      }
     }
     return { code: 0, stdout: "", stderr: "" };
   };
 
   return {
-    cleanup: () => fs.rm(rootDir, { force: true, recursive: true }), commands, logs, paths,
+    activationObserved, cleanup: () => fs.rm(rootDir, { force: true, recursive: true }), commands, logs, paths,
     previousRelease, run, serviceState
   };
 }
@@ -217,7 +241,7 @@ test("migration failure restores the prior release and state but keeps content s
     assert.equal(harness.serviceState.active.get(ADMIN_SERVICE), true);
     assert.equal(harness.serviceState.active.get(CONTENT_SERVICE), false);
     assert.equal(harness.serviceState.enabled.get(ADMIN_SERVICE), true);
-    assert.equal(harness.serviceState.enabled.get(CONTENT_SERVICE), true);
+    assert.equal(harness.serviceState.enabled.get(CONTENT_SERVICE), false);
     assert.equal(harness.commands.some(({ args }) => args.includes("migrate:record-index:recover")), false);
     assert.match(harness.logs.join("\n"), /data state requires operator review/i);
   } finally { await harness.cleanup(); }
@@ -236,24 +260,42 @@ test("migration failure rolls back when the content unit did not previously exis
     assert.equal(harness.serviceState.enabled.get(CONTENT_SERVICE), false);
   } finally { await harness.cleanup(); }
 });
-test("activation failure restores symlink, units, Nginx files, and prior service state", async () => {
-  const harness = await createHarness({ activationFails: true, adminActive: false, adminEnabled: false, contentActive: true, contentEnabled: false });
+test("post-start Nginx failure restores the prior release, files, service state, and admin health", async () => {
+  const harness = await createHarness({ postStartNginxFails: true, adminActive: true, adminEnabled: true, contentActive: true, contentEnabled: false });
   try {
     const snapshots = new Map();
     for (const filePath of [harness.paths.adminUnit, harness.paths.contentUnit, harness.paths.nginxHost, harness.paths.adminSnippet, harness.paths.contentSnippet]) {
       snapshots.set(filePath, await fs.readFile(filePath, "utf8"));
     }
-    await assert.rejects(deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, repoUrl: REPO_URL, run: harness.run }), /invalid staged nginx/);
+    await assert.rejects(deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, repoUrl: REPO_URL, run: harness.run }), /invalid final nginx/);
+    assert.equal(path.resolve(harness.activationObserved.currentTarget), path.resolve(harness.paths.releaseDir(DEPLOY_SHA)));
+    assert.match(harness.activationObserved.adminUnit, /\/opt\/html-workbench\/current\/server\.js/);
+    assert.match(harness.activationObserved.contentUnit, /\/opt\/html-workbench\/current\/server\.js/);
+    assert.match(harness.activationObserved.nginxHost, new RegExp(MANAGED_HOST_MARKER));
+    assert.notEqual(harness.activationObserved.adminSnippet, snapshots.get(harness.paths.adminSnippet));
+    assert.notEqual(harness.activationObserved.contentSnippet, snapshots.get(harness.paths.contentSnippet));
+    assert.equal(harness.activationObserved.adminActive, true);
+    assert.equal(harness.activationObserved.contentActive, true);
+    assert.equal(harness.activationObserved.adminEnabled, true);
+    assert.equal(harness.activationObserved.contentEnabled, true);
     assert.equal(path.resolve(await fs.readlink(harness.paths.currentLink)), path.resolve(harness.previousRelease));
     for (const [filePath, contents] of snapshots) assert.equal(await fs.readFile(filePath, "utf8"), contents);
-    assert.equal(harness.serviceState.active.get(ADMIN_SERVICE), false);
+    assert.equal(harness.serviceState.active.get(ADMIN_SERVICE), true);
     assert.equal(harness.serviceState.active.get(CONTENT_SERVICE), true);
-    assert.equal(harness.serviceState.enabled.get(ADMIN_SERVICE), false);
+    assert.equal(harness.serviceState.enabled.get(ADMIN_SERVICE), true);
     assert.equal(harness.serviceState.enabled.get(CONTENT_SERVICE), false);
+    const finalNginxFailureIndex = harness.commands
+      .map((entry, index) => ({ entry, index }))
+      .filter(({ entry }) => entry.command === "nginx" && entry.args[0] === "-t")
+      .at(1).index;
+    assert.ok(harness.commands.slice(finalNginxFailureIndex + 1).some(({ command, args }) =>
+      command === "curl"
+      && args.includes("Host: ho.wekki.fun")
+      && args.includes("http://127.0.0.1:3000/healthz")
+    ));
     assert.ok(await exists(harness.paths.releaseDir(DEPLOY_SHA)));
   } finally { await harness.cleanup(); }
 });
-
 test("effective environment parsing honors quotes, duplicate last-wins values, and empty credentials", () => {
   const parsed = parseSystemdEnvironmentFile(`HTML_WORKBENCH_PASSWORD=first
 HTML_WORKBENCH_PASSWORD="last value"
@@ -272,7 +314,7 @@ HTML_WORKBENCH_PUBLIC_ORIGIN=https://page.wekki.fun
 
 test("deployment rejects an effectively empty quoted credential before stopping services", async () => {
   const harness = await createHarness({
-    environmentFile: validEnvironmentFile().replace('HTML_WORKBENCH_DOWNLOAD_PASSWORD="production download password"', 'HTML_WORKBENCH_DOWNLOAD_PASSWORD=""')
+    environmentFile: validEnvironmentFile().replace('HTML_WORKBENCH_DOWNLOAD_PASSWORD="885688"', 'HTML_WORKBENCH_DOWNLOAD_PASSWORD=""')
   });
   try {
     await assert.rejects(
@@ -282,12 +324,37 @@ test("deployment rejects an effectively empty quoted credential before stopping 
     assert.equal(harness.commands.some(({ command, args }) => command === "systemctl" && args[0] === "stop"), false);
   } finally { await harness.cleanup(); }
 });
-test("production environment rejects the legacy fallback password even when explicitly present", () => {
+test("production environment accepts explicitly configured 885688 credentials", () => {
   const parsed = parseSystemdEnvironmentFile(validEnvironmentFile());
   parsed.HTML_WORKBENCH_PASSWORD = "885688";
+  parsed.HTML_WORKBENCH_DOWNLOAD_PASSWORD = "885688";
+  assert.equal(validateEffectiveEnvironment(parsed), true);
+});
+
+test("production environment rejects missing credentials instead of silently falling back", () => {
+  const parsed = parseSystemdEnvironmentFile(validEnvironmentFile());
+  delete parsed.HTML_WORKBENCH_PASSWORD;
   assert.throws(() => validateEffectiveEnvironment(parsed), /HTML_WORKBENCH_PASSWORD/);
 });
 
+for (const [name, option] of [
+  ["LoadState", "systemctlShowFails"],
+  ["active state", "systemctlIsActiveFails"],
+  ["enabled state", "systemctlIsEnabledFails"]
+]) {
+  test(`systemctl ${name} control-plane failure aborts before stop or migration`, async () => {
+    const harness = await createHarness({ [option]: true });
+    try {
+      await assert.rejects(
+        deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, repoUrl: REPO_URL, run: harness.run }),
+        /Failed to connect to bus/
+      );
+      assert.equal(harness.serviceState.active.get(ADMIN_SERVICE), true);
+      assert.equal(harness.commands.some(({ command, args }) => command === "systemctl" && args[0] === "stop"), false);
+      assert.equal(harness.commands.some(({ command, args }) => command === "systemd-run" && args.includes("migrate:record-index")), false);
+    } finally { await harness.cleanup(); }
+  });
+}
 test("systemd units run the atomically activated current release", async () => {
   const [admin, content] = await Promise.all([fs.readFile("deploy/self-host/html-workbench.service", "utf8"), fs.readFile("deploy/self-host/html-workbench-content.service", "utf8")]);
   for (const service of [admin, content]) {

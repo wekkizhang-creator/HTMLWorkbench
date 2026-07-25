@@ -67,7 +67,7 @@ HTML_WORKBENCH_DOWNLOAD_PASSWORD=<separate download password>
 HTML_WORKBENCH_CURSOR_SECRET=<random cursor-signing secret>
 ```
 
-Do not commit real credentials. All four credentials are required and must be non-empty; `885688` is rejected for production. The deploy preflight uses `systemd-run` with `EnvironmentFile=/etc/html-workbench.env`, so systemd quote handling and duplicate-key last-wins behavior are validated before either service is stopped.
+Do not commit real credentials. All four credentials are required and must be explicitly configured and non-empty so runtime code cannot silently use fallback values. The required management and download value `885688` is valid when it is explicitly present in the environment file. The deploy preflight uses `systemd-run` with `EnvironmentFile=/etc/html-workbench.env`, so systemd quote handling and duplicate-key last-wins behavior are validated before either service is stopped.
 
 ### Managed Nginx configuration
 
@@ -140,7 +140,7 @@ sudo systemd-run --wait --collect --pipe \
 sudo systemctl start html-workbench
 ```
 
-Live migration is performed only by `deploy.sh`. If migration fails, deployment restores the previous release, units, managed Nginx files, and previous admin state, but keeps content stopped. It never labels the failed release recovered and never runs lock recovery automatically. The failed release remains under `/opt/html-workbench/releases/<failed-deploy-sha>` for diagnosis.
+Live migration is performed only by `deploy.sh`. If migration fails, deployment restores the previous release, units, managed Nginx files, and previous admin state, but keeps content stopped and disabled regardless of its prior state. It never labels the failed release recovered and never runs lock recovery automatically. The failed release remains under `/opt/html-workbench/releases/<failed-deploy-sha>` for diagnosis.
 
 Explicit recovery is an operator-only action after confirming no migration process is active. Run the recovery implementation from the retained failed release, because the restored pre-release code may not contain it:
 
