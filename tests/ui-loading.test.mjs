@@ -7,10 +7,10 @@ const ELEMENT_IDS = [
   "clearButton", "copyLatestButton", "documentTypeCustom", "documentTypeSelect",
   "dropzone", "emptyState", "emptyText", "fileDetail", "fileInput", "fileName",
   "latestLink", "latestTime", "linkStatus", "logoutButton", "openLatestButton",
-  "originText", "recordBody", "recordsError", "recordsErrorMessage", "recordsLoading",
+  "originText", "recordBody", "recordsError", "recordsErrorMessage", "recordsLoading", "recordsSkeleton",
   "recordsPanel", "refreshButton", "retryButton", "searchInput", "titleInput", "toast",
   "totalCount", "typeFilter", "uploadButton", "uploadButtonLabel", "uploadForm",
-  "uploadStatus", "loadMoreButton"
+  "uploadProgress", "uploadProgressBar", "uploadProgressLabel", "uploadStatus", "loadMoreButton"
 ];
 
 class FakeClassList {
@@ -99,6 +99,20 @@ class FakeElement {
 
   setAttribute(name, value) {
     this.attributes.set(name, String(value));
+  }
+
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  }
+
+  toggleAttribute(name, force) {
+    const shouldSet = force === undefined ? !this.attributes.has(name) : Boolean(force);
+    if (shouldSet) {
+      this.setAttribute(name, "");
+    } else {
+      this.removeAttribute(name);
+    }
+    return shouldSet;
   }
 
   closest(selector) {
@@ -464,4 +478,35 @@ test("records view includes a hidden load-more control", async () => {
 
   assert.match(html, /id="loadMoreButton"[^>]*hidden/);
   assert.match(css, /\.records-pagination/);
+});
+
+test("upload uses browser byte progress before the processing state", async () => {
+  const appSource = await readFile("public/app.js", "utf8");
+
+  assert.match(appSource, /XMLHttpRequest/);
+  assert.match(appSource, /xhr\.upload\.addEventListener\("progress"/);
+  assert.match(appSource, /setUploadPhase\("processing"\)/);
+});
+
+test("the page includes accessible upload progress and records skeletons", async () => {
+  const indexSource = await readFile("public/index.html", "utf8");
+
+  assert.match(indexSource, /role="progressbar"/);
+  assert.match(indexSource, /aria-valuenow/);
+  assert.match(indexSource, /records-skeleton/);
+});
+
+test("motion is disabled for reduced-motion users", async () => {
+  const stylesSource = await readFile("public/styles.css", "utf8");
+
+  assert.match(stylesSource, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.match(stylesSource, /animation:\s*none/);
+});
+
+test("appended and newly published records receive state-driven motion hooks", async () => {
+  const appSource = await readFile("public/app.js", "utf8");
+
+  assert.match(appSource, /row\.dataset\.entering = "true"/);
+  assert.match(appSource, /record-row--success/);
+  assert.match(appSource, /addEventListener\("animationend"/);
 });

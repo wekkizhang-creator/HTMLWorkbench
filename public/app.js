@@ -7,6 +7,7 @@ const state = {
   hasLoadedRecords: false,
   recordsLoading: false,
   uploadLoading: false,
+  uploadPhase: "idle",
   nextCursor: null,
   hasMore: false,
   activeQueryKey: "",
@@ -18,6 +19,7 @@ const MAX_UPLOAD_BYTES = 30 * 1024 * 1024;
 const RECORDS_PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 200;
 let searchDebounceTimer;
+let uploadPhaseTimer;
 const DEFAULT_DOCUMENT_TYPE = "其他";
 const BASE_DOCUMENT_TYPES = ["分析报告", "原型", "其他"];
 
@@ -43,6 +45,7 @@ const elements = {
   recordsError: document.querySelector("#recordsError"),
   recordsErrorMessage: document.querySelector("#recordsErrorMessage"),
   recordsLoading: document.querySelector("#recordsLoading"),
+  recordsSkeleton: document.querySelector("#recordsSkeleton"),
   recordsPanel: document.querySelector("#recordsPanel"),
   refreshButton: document.querySelector("#refreshButton"),
   retryButton: document.querySelector("#retryButton"),
@@ -184,6 +187,7 @@ function setRecordsLoading(isLoading) {
     elements.loadMoreButton.textContent = isLoading ? "加载中" : "加载更多";
   }
   elements.recordsLoading.hidden = !(isLoading && !state.hasLoadedRecords);
+  elements.recordsSkeleton.hidden = !isLoading;
   if (isLoading) {
     elements.recordsError.hidden = true;
   }
@@ -199,13 +203,61 @@ function showRecordsLoadError(message) {
   elements.recordsErrorMessage.textContent = message || "请检查网络后重试";
 }
 
+function uploadPhaseLabel(phase, progress) {
+  if (phase === "uploading") {
+    return Number.isFinite(progress)
+      ? "\u6b63\u5728\u4e0a\u4f20 " + Math.round(progress) + "%"
+      : "\u6b63\u5728\u4e0a\u4f20\u6587\u4ef6";
+  }
+  const labels = {
+    idle: "",
+    processing: "\u6587\u4ef6\u4f20\u8f93\u5b8c\u6210\uff0c\u6b63\u5728\u5904\u7406",
+    success: "\u53d1\u5e03\u5b8c\u6210",
+    error: "\u53d1\u5e03\u5931\u8d25"
+  };
+  return labels[phase] || "";
+}
+
+function setUploadPhase(phase, progress) {
+  window.clearTimeout(uploadPhaseTimer);
+  state.uploadPhase = phase;
+  const label = uploadPhaseLabel(phase, progress);
+  const isIndeterminate = phase === "processing"
+    || phase === "error"
+    || (phase === "uploading" && !Number.isFinite(progress));
+  const hasValue = phase === "success" || (phase === "uploading" && Number.isFinite(progress));
+
+  elements.uploadProgress.hidden = phase === "idle";
+  elements.uploadProgress.dataset.phase = phase;
+  elements.uploadProgressLabel.textContent = label;
+  elements.uploadProgressBar.toggleAttribute("data-indeterminate", isIndeterminate);
+
+  if (hasValue) {
+    const value = phase === "success" ? 100 : Math.min(100, Math.max(0, progress));
+    elements.uploadProgressBar.value = value;
+    elements.uploadProgressBar.setAttribute("value", String(value));
+    elements.uploadProgressBar.setAttribute("aria-valuenow", String(Math.round(value)));
+    elements.uploadProgressBar.removeAttribute("aria-valuetext");
+    return;
+  }
+
+  elements.uploadProgressBar.removeAttribute("value");
+  elements.uploadProgressBar.removeAttribute("aria-valuenow");
+  elements.uploadProgressBar.setAttribute("aria-valuetext", label);
+}
+
+function resetUploadPhaseSoon() {
+  window.clearTimeout(uploadPhaseTimer);
+  uploadPhaseTimer = window.setTimeout(() => setUploadPhase("idle"), 1600);
+}
+
 function setUploadLoading(isLoading) {
   state.uploadLoading = isLoading;
   elements.uploadForm.setAttribute("aria-busy", String(isLoading));
   elements.uploadButton.disabled = isLoading || !state.selectedFile;
   elements.uploadButton.classList.toggle("is-loading", isLoading);
-  elements.uploadButtonLabel.textContent = isLoading ? "正在发布" : "发布";
-  elements.uploadStatus.textContent = isLoading ? "发布中" : state.selectedFile ? "已选择" : "待选择";
+  elements.uploadButtonLabel.textContent = isLoading ? "\u6b63\u5728\u53d1\u5e03" : "\u53d1\u5e03";
+  elements.uploadStatus.textContent = isLoading ? "\u53d1\u5e03\u4e2d" : state.selectedFile ? "\u5df2\u9009\u62e9" : "\u5f85\u9009\u62e9";
 }
 
 function setSelectedFile(file) {
@@ -284,7 +336,8 @@ function setRecordCollection(records) {
   renderDocumentTypeOptions();
 }
 
-function renderRecords() {
+function renderRecords({ enteringRecordIds = [], successRecordId = null } = {}) {
+  const enteringIds = new Set(enteringRecordIds);
   const visibleRecords = state.records;
   elements.recordBody.innerHTML = "";
   elements.emptyState.classList.toggle("visible", visibleRecords.length === 0);
@@ -296,7 +349,14 @@ function renderRecords() {
   for (const record of visibleRecords) {
     const link = absoluteUrl(record.url);
     const row = document.createElement("tr");
+    row.className = "record-row";
     row.dataset.id = record.id;
+    if (enteringIds.has(record.id)) {
+      row.dataset.entering = "true";
+    }
+    if (successRecordId === record.id) {
+      row.classList.add("record-row--success");
+    }
     row.innerHTML = `
       <td data-label="文件">
         <div class="file-stack">
@@ -332,6 +392,14 @@ function renderRecords() {
       </td>
     `;
     elements.recordBody.appendChild(row);
+    if (row.dataset.entering === "true" || row.classList.contains("record-row--success")) {
+      const clearMotion = () => {
+        delete row.dataset.entering;
+        row.classList.remove("record-row--success");
+      };
+      row.addEventListener("animationend", clearMotion, { once: true });
+      window.setTimeout(clearMotion, 1200);
+    }
   }
 
   renderStats();
@@ -363,6 +431,44 @@ async function api(path, options = {}) {
     throw new Error(payload.error || "请求失败");
   }
   return payload;
+}
+
+function uploadWithProgress(url, formData, onProgress, method = "POST") {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url);
+    xhr.responseType = "json";
+    xhr.upload.addEventListener("progress", (event) => {
+      onProgress(event.lengthComputable && event.total > 0
+        ? (event.loaded / event.total) * 100
+        : null);
+    });
+    xhr.upload.addEventListener("load", () => onProgress(100));
+    xhr.addEventListener("error", () => {
+      reject(new Error("\u7f51\u7edc\u8fde\u63a5\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u7f51\u7edc\u540e\u91cd\u8bd5"));
+    });
+    xhr.addEventListener("load", () => {
+      let payload = xhr.response;
+      if (!payload || typeof payload !== "object") {
+        try {
+          payload = JSON.parse(xhr.responseText || "{}");
+        } catch {
+          payload = {};
+        }
+      }
+      if (xhr.status === 401) {
+        redirectToLogin();
+        reject(new Error(payload.error || "\u8bf7\u5148\u8f93\u5165\u8bbf\u95ee\u5bc6\u7801"));
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(payload.error || "\u8bf7\u6c42\u5931\u8d25"));
+        return;
+      }
+      resolve(payload);
+    });
+    xhr.send(formData);
+  });
 }
 
 async function loadRecords({ append = false } = {}) {
@@ -402,14 +508,19 @@ async function loadRecords({ append = false } = {}) {
       return false;
     }
 
+    const incomingRecords = payload.records || [];
+    const existingRecordIds = new Set(state.records.map((record) => record.id));
     const records = append
-      ? deduplicateById([...state.records, ...(payload.records || [])])
-      : (payload.records || []);
+      ? deduplicateById([...state.records, ...incomingRecords])
+      : incomingRecords;
+    const enteringRecordIds = append
+      ? incomingRecords.filter((record) => !existingRecordIds.has(record.id)).map((record) => record.id)
+      : [];
     setRecordCollection(records);
     state.nextCursor = payload.page?.nextCursor || null;
     state.hasMore = Boolean(payload.page?.hasMore && state.nextCursor);
     state.pendingReplacementPagination = null;
-    renderRecords();
+    renderRecords({ enteringRecordIds });
     state.hasLoadedRecords = true;
     return true;
   } catch (error) {
@@ -441,18 +552,28 @@ async function uploadSelectedFile() {
   formData.append("documentType", getSelectedDocumentType());
   formData.append("title", elements.titleInput.value);
   setUploadLoading(true);
+  setUploadPhase("uploading", 0);
 
   try {
-    const payload = await api("/api/uploads", {
-      method: "POST",
-      body: formData
+    const payload = await uploadWithProgress("/api/uploads", formData, (progress) => {
+      if (progress === 100) {
+        setUploadPhase("processing");
+        return;
+      }
+      setUploadPhase("uploading", progress);
     });
     setRecordCollection([payload.record, ...state.records]);
     elements.titleInput.value = "";
     setSelectedFile(null);
-    renderRecords();
+    renderRecords({ successRecordId: payload.record.id });
     setLatestRecord(payload.record);
-    showToast("发布链接已生成，描述已自动补全");
+    setUploadPhase("success");
+    resetUploadPhaseSoon();
+    showToast("\u53d1\u5e03\u94fe\u63a5\u5df2\u751f\u6210\uff0c\u63cf\u8ff0\u5df2\u81ea\u52a8\u8865\u5168");
+  } catch (error) {
+    setUploadPhase("error");
+    resetUploadPhaseSoon();
+    throw error;
   } finally {
     setUploadLoading(false);
   }
@@ -569,16 +690,28 @@ async function replaceRecord(id, button) {
   const previousHtml = button.innerHTML;
   button.disabled = true;
   button.textContent = "替换中";
+  setUploadLoading(true);
+  setUploadPhase("uploading", 0);
   try {
-    const payload = await api(`/api/uploads/${id}`, {
-      method: "PUT",
-      body: formData
-    });
+    const payload = await uploadWithProgress("/api/uploads/" + id, formData, (progress) => {
+      if (progress === 100) {
+        setUploadPhase("processing");
+        return;
+      }
+      setUploadPhase("uploading", progress);
+    }, "PUT");
     setRecordCollection([payload.record, ...state.records.filter((item) => item.id !== id)]);
-    renderRecords();
+    renderRecords({ successRecordId: payload.record.id });
     setLatestRecord(payload.record);
-    showToast("文件已替换，访问链接保持不变，可回滚到上一版本");
+    setUploadPhase("success");
+    resetUploadPhaseSoon();
+    showToast("\u6587\u4ef6\u5df2\u66ff\u6362\uff0c\u8bbf\u95ee\u94fe\u63a5\u4fdd\u6301\u4e0d\u53d8\uff0c\u53ef\u56de\u6eda\u5230\u4e0a\u4e00\u7248\u672c");
+  } catch (error) {
+    setUploadPhase("error");
+    resetUploadPhaseSoon();
+    throw error;
   } finally {
+    setUploadLoading(false);
     button.disabled = false;
     button.innerHTML = previousHtml;
   }
