@@ -94,6 +94,71 @@ function activeLease(owner, ttlMs = 60_000) {
   };
 }
 
+function createCachedOriginBlobSdk(initialEntries) {
+  let sequence = 0;
+  const origin = new Map(Object.entries(initialEntries).map(([storagePath, value]) => [
+    storagePath,
+    { body: typeof value === "string" ? value : JSON.stringify(value), etag: `v${++sequence}` }
+  ]));
+  const cache = new Map([...origin].map(([storagePath, entry]) => [storagePath, { ...entry }]));
+  const preconditionFailed = () => {
+    const error = new Error("Blob precondition failed");
+    error.status = 412;
+    return error;
+  };
+
+  return {
+    cache,
+    origin,
+    async put(storagePath, body, options = {}) {
+      if (options.allowOverwrite === false && origin.has(storagePath)) {
+        const error = new Error("Blob already exists");
+        error.status = 409;
+        throw error;
+      }
+      if (options.ifMatch && origin.get(storagePath)?.etag !== options.ifMatch) {
+        throw preconditionFailed();
+      }
+      const entry = {
+        body: typeof body === "string" ? body : Buffer.from(body).toString("utf8"),
+        etag: `v${++sequence}`
+      };
+      origin.set(storagePath, entry);
+      return { pathname: storagePath, etag: entry.etag };
+    },
+    async get(storagePath, options = {}) {
+      const entry = (options.useCache === false ? origin : cache).get(storagePath);
+      if (!entry) return null;
+      return {
+        statusCode: 200,
+        stream: new Blob([entry.body]).stream(),
+        blob: { etag: entry.etag },
+        headers: new Headers({ etag: entry.etag })
+      };
+    },
+    async del(storagePaths, options = {}) {
+      const paths = Array.isArray(storagePaths) ? storagePaths : [storagePaths];
+      if (options.ifMatch && origin.get(paths[0])?.etag !== options.ifMatch) {
+        throw preconditionFailed();
+      }
+      for (const storagePath of paths) origin.delete(storagePath);
+    },
+    async list({ cursor, limit = 1000, prefix }) {
+      const paths = [...origin.keys()]
+        .filter((storagePath) => storagePath.startsWith(prefix))
+        .sort();
+      const start = Number(cursor || 0);
+      const page = paths.slice(start, start + limit);
+      const next = start + page.length;
+      return {
+        blobs: page.map((pathname) => ({ pathname })),
+        cursor: next < paths.length ? String(next) : undefined,
+        hasMore: next < paths.length
+      };
+    }
+  };
+}
+
 test("migration repairs missing, damaged, and orphaned indexes and is idempotent", async () => {
   await withLocalStorage(async ({ dataDir, storage }) => {
     const records = [
@@ -161,6 +226,91 @@ test("dry-run reports work without writing indexes or the ready marker", async (
   });
 });
 
+test("dry-run migration excludes a concurrent live migration for its full traversal", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    const record = recordAt("2026-02-02T00:00:00.000Z", 11);
+    await writeJson(dataDir, record.recordPath, record);
+    await writeJson(dataDir, buildRecordIndexPath(record), buildRecordIndexDocument(record));
+    await writeJson(dataDir, READY_MARKER_PATH, {
+      version: 1,
+      completedAt: "2026-02-02T12:00:00.000Z"
+    });
+    let signalProgress;
+    const progressEntered = new Promise((resolve) => { signalProgress = resolve; });
+    let releaseProgress;
+    const progressPaused = new Promise((resolve) => { releaseProgress = resolve; });
+    const first = storage.migrateRecordIndex({
+      dryRun: true,
+      async onProgress() {
+        signalProgress();
+        await progressPaused;
+      }
+    });
+
+    await progressEntered;
+    let secondProgress = 0;
+    const secondStorage = await import(`../lib/storage.mjs?dry-live-test=${randomUUID()}`);
+    try {
+      await assert.rejects(
+        () => secondStorage.migrateRecordIndex({
+          onProgress() {
+            secondProgress += 1;
+          }
+        }),
+        (error) => error.status === 503 && error.code === "migration_lock_held"
+      );
+      assert.equal(secondProgress, 0);
+      await fs.access(path.join(dataDir, ...READY_MARKER_PATH.split("/")));
+    } finally {
+      releaseProgress();
+      await first;
+    }
+  });
+});
+
+test("dry-run migration excludes another dry-run for its full traversal", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    const record = recordAt("2026-02-03T00:00:00.000Z", 12);
+    await writeJson(dataDir, record.recordPath, record);
+    await writeJson(dataDir, buildRecordIndexPath(record), buildRecordIndexDocument(record));
+    await writeJson(dataDir, READY_MARKER_PATH, {
+      version: 1,
+      completedAt: "2026-02-03T12:00:00.000Z"
+    });
+    let signalProgress;
+    const progressEntered = new Promise((resolve) => { signalProgress = resolve; });
+    let releaseProgress;
+    const progressPaused = new Promise((resolve) => { releaseProgress = resolve; });
+    const first = storage.migrateRecordIndex({
+      dryRun: true,
+      async onProgress() {
+        signalProgress();
+        await progressPaused;
+      }
+    });
+
+    await progressEntered;
+    let secondProgress = 0;
+    const secondStorage = await import(`../lib/storage.mjs?dry-dry-test=${randomUUID()}`);
+    try {
+      await assert.rejects(
+        () => secondStorage.migrateRecordIndex({
+          dryRun: true,
+          onProgress() {
+            secondProgress += 1;
+          }
+        }),
+        (error) => error.status === 503 && error.code === "migration_lock_held"
+      );
+      assert.equal(secondProgress, 0);
+      await fs.access(path.join(dataDir, ...READY_MARKER_PATH.split("/")));
+    } finally {
+      releaseProgress();
+      await first;
+    }
+  });
+});
+
 test("failed canonical reads revoke readiness and preserve every existing index", async () => {
   await withLocalStorage(async ({ dataDir, storage }) => {
     const record = recordAt("2026-03-01T00:00:00.000Z", 20);
@@ -187,6 +337,42 @@ test("failed canonical reads revoke readiness and preserve every existing index"
     await assertMissing(dataDir, MAINTENANCE_LOCK_PATH);
     await assert.rejects(
       () => storage.listRecordsPage({
+        limit: 50,
+        cursor: null,
+        query: "",
+        documentType: ""
+      }),
+      (error) => error.status === 503 && error.code === "record_index_not_ready"
+    );
+  });
+});
+
+test("Blob listing bypasses stale ready and index cache after a failed migration", async () => {
+  await withLocalStorage(async ({ storage }) => {
+    const record = recordAt("2026-03-03T00:00:00.000Z", 21);
+    const index = buildRecordIndexDocument(record);
+    const blobSdk = createCachedOriginBlobSdk({
+      [record.recordPath]: "{broken-json",
+      [index.indexPath]: index,
+      [READY_MARKER_PATH]: {
+        version: 1,
+        completedAt: "2026-03-04T00:00:00.000Z"
+      }
+    });
+
+    assert.deepEqual(await storage.migrateRecordIndex({ blobSdk }), {
+      scanned: 1,
+      created: 0,
+      repaired: 0,
+      skipped: 0,
+      failed: 1
+    });
+    assert.equal(blobSdk.origin.has(READY_MARKER_PATH), false);
+    assert.equal(blobSdk.cache.has(READY_MARKER_PATH), true);
+
+    await assert.rejects(
+      () => storage.listRecordsPage({
+        blobSdk,
         limit: 50,
         cursor: null,
         query: "",
@@ -355,6 +541,64 @@ test("two concurrent migrations allow only one owner to enter progress", async (
       skipped: 0,
       failed: 0
     });
+  });
+});
+
+test("local owner A release cannot remove replacement owner B after recovery", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    const record = recordAt("2026-04-06T00:00:00.000Z", 34);
+    await writeJson(dataDir, record.recordPath, record);
+    await writeJson(dataDir, buildRecordIndexPath(record), buildRecordIndexDocument(record));
+    await writeJson(dataDir, READY_MARKER_PATH, { version: 1 });
+
+    let signalFirstProgress;
+    const firstProgress = new Promise((resolve) => { signalFirstProgress = resolve; });
+    let releaseFirst;
+    const firstPaused = new Promise((resolve) => { releaseFirst = resolve; });
+    const first = storage.migrateRecordIndex({
+      leaseHeartbeatMs: 10_000,
+      leaseTtlMs: 30_000,
+      async onProgress() {
+        signalFirstProgress();
+        await firstPaused;
+      }
+    });
+
+    let second;
+    let releaseSecond;
+    try {
+      await firstProgress;
+      const maintenancePath = path.join(dataDir, ...MAINTENANCE_LOCK_PATH.split("/"));
+      assert.equal((await fs.stat(maintenancePath)).isDirectory(), true);
+
+      await storage.recoverRecordIndexMaintenance();
+      const secondStorage = await import(`../lib/storage.mjs?replacement-owner-test=${randomUUID()}`);
+      let signalSecondProgress;
+      const secondProgress = new Promise((resolve) => { signalSecondProgress = resolve; });
+      const secondPaused = new Promise((resolve) => { releaseSecond = resolve; });
+      second = secondStorage.migrateRecordIndex({
+        leaseHeartbeatMs: 10_000,
+        leaseTtlMs: 30_000,
+        async onProgress() {
+          signalSecondProgress();
+          await secondPaused;
+        }
+      });
+      await secondProgress;
+
+      releaseFirst();
+      await first;
+      await fs.access(maintenancePath);
+      const thirdStorage = await import(`../lib/storage.mjs?third-owner-test=${randomUUID()}`);
+      await assert.rejects(
+        () => thirdStorage.migrateRecordIndex(),
+        (error) => error.status === 503 && error.code === "migration_lock_held"
+      );
+    } finally {
+      releaseFirst?.();
+      releaseSecond?.();
+      await Promise.allSettled([first, second].filter(Boolean));
+    }
   });
 });
 

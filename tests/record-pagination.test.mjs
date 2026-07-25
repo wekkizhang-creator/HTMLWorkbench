@@ -12,6 +12,7 @@ import {
 
 const ID_A = "11111111-1111-4111-8111-111111111111";
 const ID_B = "22222222-2222-4222-8222-222222222222";
+const DIRTY_MARKER_PATH = "record-index-state/v1-dirty.json";
 
 function recordAt(uploadedAt, index = 0, overrides = {}) {
   const id = `${String(index).padStart(8, "0")}-0000-4000-8000-${String(index).padStart(12, "0")}`;
@@ -499,6 +500,78 @@ test("existing records without a completed index return a maintenance response",
       }),
       (error) => error.status === 503 && error.code === "record_index_not_ready"
     );
+  });
+});
+
+test("indexed save failure revokes readiness and preserves the original error", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    const existing = recordAt("2026-07-20T00:00:00.000Z", 70);
+    await seedLocalIndex(dataDir, [existing]);
+    const invalid = recordAt("not-a-timestamp", 71);
+
+    await assert.rejects(
+      () => storage.saveIndexedRecord(invalid),
+      (error) => error.code === "invalid_record_timestamp"
+    );
+    await fs.access(path.join(dataDir, "records", `${invalid.id}.json`));
+    await assert.rejects(
+      fs.access(path.join(dataDir, "record-index-state", "v1-ready.json")),
+      (error) => error.code === "ENOENT"
+    );
+    await fs.access(path.join(dataDir, ...DIRTY_MARKER_PATH.split("/")));
+  });
+});
+
+test("partial indexed delete failure revokes readiness and preserves the original error", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    const record = recordAt("2026-07-21T00:00:00.000Z", 72);
+    await seedLocalIndex(dataDir, [record]);
+    const canonicalPath = path.join(dataDir, "records", `${record.id}.json`);
+    await fs.rm(canonicalPath);
+    await fs.mkdir(canonicalPath);
+
+    await assert.rejects(
+      () => storage.deleteIndexedRecord({
+        ...record,
+        recordPath: `records/${record.id}.json`
+      }),
+      (error) => ["EISDIR", "EPERM", "ERR_FS_EISDIR"].includes(error.code)
+    );
+    await assert.rejects(
+      fs.access(path.join(dataDir, "record-index-state", "v1-ready.json")),
+      (error) => error.code === "ENOENT"
+    );
+    await fs.access(path.join(dataDir, ...DIRTY_MARKER_PATH.split("/")));
+
+    await fs.rmdir(canonicalPath);
+    const migration = await storage.migrateRecordIndex();
+    assert.equal(migration.failed, 0);
+    await fs.access(path.join(dataDir, "record-index-state", "v1-ready.json"));
+    await assert.rejects(fs.access(path.join(dataDir, ...DIRTY_MARKER_PATH.split("/"))));
+  });
+});
+
+test("concurrent first writers cannot publish ready after one leaves an unindexed canonical", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    const secondStorage = await import(`../lib/storage.mjs?concurrent-bootstrap-test=${randomUUID()}`);
+    const invalid = recordAt("not-a-timestamp", 73);
+    const valid = recordAt("2026-07-22T00:00:00.000Z", 74);
+
+    const [invalidResult, validResult] = await Promise.allSettled([
+      storage.saveIndexedRecord(invalid),
+      secondStorage.saveIndexedRecord(valid)
+    ]);
+
+    assert.equal(invalidResult.status, "rejected");
+    assert.equal(invalidResult.reason.code, "invalid_record_timestamp");
+    assert.equal(validResult.status, "fulfilled");
+    await fs.access(path.join(dataDir, "records", `${invalid.id}.json`));
+    await fs.access(path.join(dataDir, ...buildRecordIndexPath(validResult.value).split("/")));
+    await assert.rejects(
+      fs.access(path.join(dataDir, "record-index-state", "v1-ready.json")),
+      (error) => error.code === "ENOENT"
+    );
+    await fs.access(path.join(dataDir, ...DIRTY_MARKER_PATH.split("/")));
   });
 });
 
