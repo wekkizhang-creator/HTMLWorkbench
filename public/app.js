@@ -18,6 +18,7 @@ const state = {
 const MAX_UPLOAD_BYTES = 30 * 1024 * 1024;
 const RECORDS_PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 200;
+const UPLOAD_REQUEST_TIMEOUT_MS = 60 * 1000;
 let searchDebounceTimer;
 let uploadPhaseTimer;
 const DEFAULT_DOCUMENT_TYPE = "其他";
@@ -57,6 +58,9 @@ const elements = {
   uploadButton: document.querySelector("#uploadButton"),
   uploadButtonLabel: document.querySelector("#uploadButtonLabel"),
   uploadForm: document.querySelector("#uploadForm"),
+  uploadProgress: document.querySelector("#uploadProgress"),
+  uploadProgressBar: document.querySelector("#uploadProgressBar"),
+  uploadProgressLabel: document.querySelector("#uploadProgressLabel"),
   uploadStatus: document.querySelector("#uploadStatus")
 };
 
@@ -397,8 +401,11 @@ function renderRecords({ enteringRecordIds = [], successRecordId = null } = {}) 
         delete row.dataset.entering;
         row.classList.remove("record-row--success");
       };
-      row.addEventListener("animationend", clearMotion, { once: true });
-      window.setTimeout(clearMotion, 1200);
+      const motionTimer = window.setTimeout(clearMotion, 1200);
+      row.addEventListener("animationend", () => {
+        window.clearTimeout(motionTimer);
+        clearMotion();
+      }, { once: true });
     }
   }
 
@@ -438,6 +445,7 @@ function uploadWithProgress(url, formData, onProgress, method = "POST") {
     const xhr = new XMLHttpRequest();
     xhr.open(method, url);
     xhr.responseType = "json";
+    xhr.timeout = UPLOAD_REQUEST_TIMEOUT_MS;
     xhr.upload.addEventListener("progress", (event) => {
       onProgress(event.lengthComputable && event.total > 0
         ? (event.loaded / event.total) * 100
@@ -446,6 +454,12 @@ function uploadWithProgress(url, formData, onProgress, method = "POST") {
     xhr.upload.addEventListener("load", () => onProgress(100));
     xhr.addEventListener("error", () => {
       reject(new Error("\u7f51\u7edc\u8fde\u63a5\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u7f51\u7edc\u540e\u91cd\u8bd5"));
+    });
+    xhr.addEventListener("abort", () => {
+      reject(new Error("\u4e0a\u4f20\u5df2\u53d6\u6d88\uff0c\u8bf7\u91cd\u8bd5"));
+    });
+    xhr.addEventListener("timeout", () => {
+      reject(new Error("\u4e0a\u4f20\u8d85\u65f6\uff0c\u8bf7\u91cd\u8bd5"));
     });
     xhr.addEventListener("load", () => {
       let payload = xhr.response;
@@ -552,7 +566,7 @@ async function uploadSelectedFile() {
   formData.append("documentType", getSelectedDocumentType());
   formData.append("title", elements.titleInput.value);
   setUploadLoading(true);
-  setUploadPhase("uploading", 0);
+  setUploadPhase("uploading");
 
   try {
     const payload = await uploadWithProgress("/api/uploads", formData, (progress) => {
@@ -691,7 +705,7 @@ async function replaceRecord(id, button) {
   button.disabled = true;
   button.textContent = "替换中";
   setUploadLoading(true);
-  setUploadPhase("uploading", 0);
+  setUploadPhase("uploading");
   try {
     const payload = await uploadWithProgress("/api/uploads/" + id, formData, (progress) => {
       if (progress === 100) {

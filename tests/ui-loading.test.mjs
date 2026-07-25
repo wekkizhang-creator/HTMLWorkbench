@@ -125,6 +125,68 @@ class FakeElement {
   select() {}
 }
 
+class FakeEventTarget {
+  constructor() {
+    this.listeners = new Map();
+  }
+
+  addEventListener(type, listener) {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  emit(type, event = {}) {
+    for (const listener of this.listeners.get(type) || []) {
+      listener(event);
+    }
+  }
+}
+
+function createFakeXMLHttpRequest(instances) {
+  return class FakeXMLHttpRequest extends FakeEventTarget {
+    constructor() {
+      super();
+      this.method = null;
+      this.requestBody = null;
+      this.response = null;
+      this.responseText = "";
+      this.status = 0;
+      this.timeout = 0;
+      this.upload = new FakeEventTarget();
+      instances.push(this);
+    }
+
+    open(method, url) {
+      this.method = method;
+      this.url = url;
+    }
+
+    send(body) {
+      this.requestBody = body;
+    }
+
+    progress(event) {
+      this.upload.emit("progress", event);
+    }
+
+    uploadComplete() {
+      this.upload.emit("load");
+    }
+
+    respond(status, payload) {
+      this.status = status;
+      this.response = payload;
+      this.responseText = JSON.stringify(payload);
+      this.emit("load");
+    }
+
+    fail(type) {
+      this.emit(type);
+    }
+  };
+}
+
 function jsonResponse(status, payload) {
   return {
     ok: status >= 200 && status < 300,
@@ -202,6 +264,8 @@ async function createAppHarness(initialResponses = []) {
 
   const responses = [...initialResponses];
   const requests = [];
+  const xhrs = [];
+  const replacementFiles = [];
   const timers = new Map();
   let currentTime = 0;
   let nextTimerId = 1;
@@ -220,7 +284,20 @@ async function createAppHarness(initialResponses = []) {
   const body = new FakeElement("body");
   const document = {
     body,
-    createElement: (tagName) => new FakeElement(tagName),
+    createElement(tagName) {
+      const element = new FakeElement(tagName);
+      if (tagName === "input") {
+        element.click = () => {
+          const file = replacementFiles.shift();
+          if (!file) {
+            return;
+          }
+          element.files = [file];
+          void element.dispatch("change");
+        };
+      }
+      return element;
+    },
     execCommand: () => true,
     querySelector(selector) {
       return elements[selector.replace(/^#/, "")] || null;
@@ -252,12 +329,14 @@ async function createAppHarness(initialResponses = []) {
       return timerId;
     }
   };
+  const XMLHttpRequest = createFakeXMLHttpRequest(xhrs);
   const context = {
     AbortController,
     FormData,
     Intl,
     URL,
     URLSearchParams,
+    XMLHttpRequest,
     document,
     fetch,
     navigator: {},
@@ -283,7 +362,10 @@ async function createAppHarness(initialResponses = []) {
     elements,
     enqueue: (...items) => responses.push(...items),
     location,
-    requests
+    pendingTimerCount: () => timers.size,
+    queueReplacement: (...files) => replacementFiles.push(...files),
+    requests,
+    xhrs
   };
 }
 
@@ -480,19 +562,10 @@ test("records view includes a hidden load-more control", async () => {
   assert.match(css, /\.records-pagination/);
 });
 
-test("upload uses browser byte progress before the processing state", async () => {
-  const appSource = await readFile("public/app.js", "utf8");
-
-  assert.match(appSource, /XMLHttpRequest/);
-  assert.match(appSource, /xhr\.upload\.addEventListener\("progress"/);
-  assert.match(appSource, /setUploadPhase\("processing"\)/);
-});
-
 test("the page includes accessible upload progress and records skeletons", async () => {
   const indexSource = await readFile("public/index.html", "utf8");
 
   assert.match(indexSource, /role="progressbar"/);
-  assert.match(indexSource, /aria-valuenow/);
   assert.match(indexSource, /records-skeleton/);
 });
 
@@ -503,10 +576,160 @@ test("motion is disabled for reduced-motion users", async () => {
   assert.match(stylesSource, /animation:\s*none/);
 });
 
-test("appended and newly published records receive state-driven motion hooks", async () => {
-  const appSource = await readFile("public/app.js", "utf8");
 
-  assert.match(appSource, /row\.dataset\.entering = "true"/);
-  assert.match(appSource, /record-row--success/);
-  assert.match(appSource, /addEventListener\("animationend"/);
+function uploadFile(name = "draft.html") {
+  const file = new Blob(["<html></html>"], { type: "text/html" });
+  Object.defineProperty(file, "name", { value: name });
+  return file;
+}
+
+async function startUpload(harness, file = uploadFile()) {
+  harness.elements.fileInput.files = [file];
+  await harness.elements.fileInput.dispatch("change");
+  const completion = harness.elements.uploadForm.dispatch("submit");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(harness.xhrs.length, 1, "upload XHR was not created: " + harness.elements.toast.textContent);
+  return { completion, xhr: harness.xhrs[0] };
+}
+
+async function startReplacement(harness, file = uploadFile("replacement.html")) {
+  const button = new FakeElement("button");
+  const row = new FakeElement("tr");
+  button.dataset.action = "replace";
+  button.innerHTML = "replace";
+  row.dataset.id = "replace-target";
+  button.closestTargets = new Map([["[data-action]", button], ["tr", row]]);
+  harness.queueReplacement(file);
+  const completion = harness.elements.recordBody.dispatch("click", { target: button });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(harness.xhrs.length, 1, "replacement XHR was not created: " + harness.elements.toast.textContent);
+  return { button, completion, xhr: harness.xhrs[0] };
+}
+
+test("upload exposes bytes only after a computable XHR progress event and then processes the response", async () => {
+  const harness = await createAppHarness([recordsResponse([sampleRecord()])]);
+  await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
+
+  const { completion, xhr } = await startUpload(harness);
+  assert.equal(xhr.method, "POST");
+  assert.equal(harness.elements.uploadProgress.dataset.phase, "uploading");
+  assert.equal(harness.elements.uploadProgressBar.getAttribute("value"), null);
+  assert.equal(harness.elements.uploadProgressBar.getAttribute("aria-valuenow"), null);
+  assert.equal(harness.elements.uploadProgressBar.getAttribute("data-indeterminate"), "");
+
+  xhr.progress({ lengthComputable: false, loaded: 3, total: 0 });
+  assert.equal(harness.elements.uploadProgressBar.getAttribute("aria-valuenow"), null);
+
+  xhr.progress({ lengthComputable: true, loaded: 25, total: 100 });
+  assert.equal(harness.elements.uploadProgressBar.getAttribute("value"), "25");
+  assert.equal(harness.elements.uploadProgressBar.getAttribute("aria-valuenow"), "25");
+
+  xhr.progress({ lengthComputable: true, loaded: 100, total: 100 });
+  assert.equal(harness.elements.uploadProgress.dataset.phase, "processing");
+  assert.equal(harness.elements.uploadProgressBar.getAttribute("value"), null);
+  assert.equal(harness.elements.uploadProgressBar.getAttribute("aria-valuenow"), null);
+
+  xhr.respond(201, { record: sampleRecord({ id: "published-record", title: "Published" }) });
+  await completion;
+  assert.equal(harness.elements.uploadProgress.dataset.phase, "success");
+  assert.equal(harness.elements.uploadForm.getAttribute("aria-busy"), "false");
+  assert.equal(harness.elements.uploadButton.disabled, true);
+  assert.match(harness.elements.recordBody.children[0].innerHTML, /Published/);
+
+  harness.advanceTimersBy(1600);
+  assert.equal(harness.elements.uploadProgress.hidden, true);
+  assert.equal(harness.elements.uploadProgress.dataset.phase, "idle");
+});
+
+test("replacement uses the same unknown-before-bytes upload state", async () => {
+  const target = sampleRecord({ id: "replace-target", title: "Before replace" });
+  const harness = await createAppHarness([recordsResponse([target])]);
+  await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
+
+  const { button, completion, xhr } = await startReplacement(harness);
+  assert.equal(xhr.method, "PUT");
+  assert.equal(harness.elements.uploadProgress.dataset.phase, "uploading");
+  assert.equal(harness.elements.uploadProgressBar.getAttribute("aria-valuenow"), null);
+
+  xhr.progress({ lengthComputable: true, loaded: 50, total: 100 });
+  assert.equal(harness.elements.uploadProgressBar.getAttribute("aria-valuenow"), "50");
+  xhr.uploadComplete();
+  assert.equal(harness.elements.uploadProgress.dataset.phase, "processing");
+
+  xhr.respond(200, { record: sampleRecord({ id: "replace-target", title: "After replace" }) });
+  await completion;
+  assert.equal(button.disabled, false);
+  assert.equal(harness.elements.uploadForm.getAttribute("aria-busy"), "false");
+  assert.match(harness.elements.recordBody.children[0].innerHTML, /After replace/);
+});
+
+test("upload preserves JSON API errors and recovers controls", async () => {
+  const harness = await createAppHarness([recordsResponse([sampleRecord()])]);
+  await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
+
+  const { completion, xhr } = await startUpload(harness);
+  xhr.respond(422, { error: "server says no" });
+  await completion;
+
+  assert.equal(harness.elements.toast.textContent, "server says no");
+  assert.equal(harness.elements.uploadProgress.dataset.phase, "error");
+  assert.equal(harness.elements.uploadForm.getAttribute("aria-busy"), "false");
+  assert.equal(harness.elements.uploadButton.disabled, false);
+  harness.advanceTimersBy(1600);
+  assert.equal(harness.elements.uploadProgress.dataset.phase, "idle");
+});
+
+test("upload redirects on a 401 JSON response and recovers controls", async () => {
+  const harness = await createAppHarness([recordsResponse([sampleRecord()])]);
+  await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
+
+  const { completion, xhr } = await startUpload(harness);
+  xhr.respond(401, { error: "expired session" });
+  await completion;
+
+  assert.equal(harness.location.href, "/login.html?next=%2F");
+  assert.equal(harness.elements.toast.textContent, "expired session");
+  assert.equal(harness.elements.uploadForm.getAttribute("aria-busy"), "false");
+  assert.equal(harness.elements.uploadButton.disabled, false);
+});
+
+test("upload network, abort, and timeout failures enter error state and recover controls", async () => {
+  const cases = [
+    ["error", "\u7f51\u7edc\u8fde\u63a5\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u7f51\u7edc\u540e\u91cd\u8bd5"],
+    ["abort", "\u4e0a\u4f20\u5df2\u53d6\u6d88\uff0c\u8bf7\u91cd\u8bd5"],
+    ["timeout", "\u4e0a\u4f20\u8d85\u65f6\uff0c\u8bf7\u91cd\u8bd5"]
+  ];
+
+  for (const [eventName, expectedMessage] of cases) {
+    const harness = await createAppHarness([recordsResponse([sampleRecord()])]);
+    await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
+    const { completion, xhr } = await startUpload(harness);
+    assert.equal(xhr.timeout, 60000);
+    xhr.fail(eventName);
+    await completion;
+
+    assert.equal(harness.elements.toast.textContent, expectedMessage);
+    assert.equal(harness.elements.uploadProgress.dataset.phase, "error");
+    assert.equal(harness.elements.uploadForm.getAttribute("aria-busy"), "false");
+    assert.equal(harness.elements.uploadButton.disabled, false);
+    harness.advanceTimersBy(1600);
+    assert.equal(harness.elements.uploadProgress.dataset.phase, "idle");
+  }
+});
+
+test("animation completion clears the record motion fallback timer", async () => {
+  const first = sampleRecord({ id: "first-motion" });
+  const second = sampleRecord({ id: "second-motion" });
+  const harness = await createAppHarness([
+    recordsResponse([first], { nextCursor: "motion-cursor", hasMore: true }),
+    recordsResponse([second])
+  ]);
+  await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
+
+  await harness.elements.loadMoreButton.dispatch("click");
+  await waitFor(() => harness.elements.recordBody.children.length === 2);
+  assert.equal(harness.pendingTimerCount(), 1);
+
+  await harness.elements.recordBody.children[1].dispatch("animationend");
+  assert.equal(harness.pendingTimerCount(), 0);
 });
