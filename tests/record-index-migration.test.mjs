@@ -159,6 +159,48 @@ function createCachedOriginBlobSdk(initialEntries) {
   };
 }
 
+function createLeaseCleanupFailureBlobSdk({ operationError, cleanupError }) {
+  const leases = new Map();
+  let sequence = 0;
+
+  return {
+    async put(storagePath, body, options = {}) {
+      if (options.allowOverwrite === false && leases.has(storagePath)) {
+        const error = new Error("Blob already exists");
+        error.status = 409;
+        throw error;
+      }
+      const entry = {
+        body: typeof body === "string" ? body : Buffer.from(body).toString("utf8"),
+        etag: `v${++sequence}`
+      };
+      leases.set(storagePath, entry);
+      return { pathname: storagePath, etag: entry.etag };
+    },
+    async get(storagePath) {
+      const entry = leases.get(storagePath);
+      if (entry) {
+        return {
+          statusCode: 200,
+          stream: new Blob([entry.body]).stream(),
+          blob: { etag: entry.etag },
+          headers: new Headers({ etag: entry.etag })
+        };
+      }
+      if (storagePath === MAINTENANCE_LOCK_PATH) return null;
+      if (operationError) throw operationError;
+      return null;
+    },
+    async del(storagePath) {
+      if (storagePath.startsWith(READER_LEASE_PREFIX)) throw cleanupError;
+      leases.delete(storagePath);
+    },
+    async list() {
+      return { blobs: [], cursor: undefined, hasMore: false };
+    }
+  };
+}
+
 test("migration repairs missing, damaged, and orphaned indexes and is idempotent", async () => {
   await withLocalStorage(async ({ dataDir, storage }) => {
     const records = [
@@ -943,6 +985,47 @@ test("writer lease is released when a mutation throws", async () => {
       /mutation failed/
     );
     assert.deepEqual(await listLeaseFiles(dataDir, WRITER_LEASE_PREFIX), []);
+  });
+});
+
+test("reader lease cleanup failure does not replace the primary operation error", async () => {
+  await withLocalStorage(async ({ storage }) => {
+    const operationError = new Error("index read failed");
+    const cleanupError = new Error("reader lease cleanup failed");
+    const blobSdk = createLeaseCleanupFailureBlobSdk({ operationError, cleanupError });
+
+    await assert.rejects(
+      () => storage.listRecordsPage({
+        blobSdk,
+        limit: 50,
+        cursor: null,
+        query: "",
+        documentType: ""
+      }),
+      (error) => {
+        assert.equal(error, operationError);
+        assert.equal(error.cleanupError, cleanupError);
+        return true;
+      }
+    );
+  });
+});
+
+test("reader lease cleanup failure rejects after a successful operation", async () => {
+  await withLocalStorage(async ({ storage }) => {
+    const cleanupError = new Error("reader lease cleanup failed");
+    const blobSdk = createLeaseCleanupFailureBlobSdk({ cleanupError });
+
+    await assert.rejects(
+      () => storage.listRecordsPage({
+        blobSdk,
+        limit: 50,
+        cursor: null,
+        query: "",
+        documentType: ""
+      }),
+      (error) => error === cleanupError
+    );
   });
 });
 
