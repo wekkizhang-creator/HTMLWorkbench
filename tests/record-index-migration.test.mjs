@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import test from "node:test";
 import {
   buildRecordIndexDocument,
@@ -11,7 +14,9 @@ import {
 
 const MAINTENANCE_LOCK_PATH = "record-index-state/v1-maintenance-lock.json";
 const READY_MARKER_PATH = "record-index-state/v1-ready.json";
+const READER_LEASE_PREFIX = "record-index-state/v1-leases/readers/";
 const WRITER_LEASE_PREFIX = "record-index-state/v1-leases/writers/";
+const execFileAsync = promisify(execFile);
 
 function recordAt(uploadedAt, index) {
   const id = `${String(index).padStart(8, "0")}-0000-4000-8000-${String(index).padStart(12, "0")}`;
@@ -220,6 +225,9 @@ test("maintenance lock rejects listing and every mutation lifecycle across modul
     const maintenanceError = (error) => (
       error.status === 503 && error.code === "record_index_maintenance"
     );
+    const migrationLockError = (error) => (
+      error.status === 503 && error.code === "migration_lock_held"
+    );
     const previousVersionRecord = {
       ...record,
       previousVersion: {
@@ -285,7 +293,7 @@ test("maintenance lock rejects listing and every mutation lifecycle across modul
       );
       await assert.rejects(
         () => secondStorage.migrateRecordIndex(),
-        maintenanceError
+        migrationLockError
       );
       await assertMissing(dataDir, READY_MARKER_PATH);
       await assertMissing(dataDir, nextRecord.recordPath);
@@ -304,6 +312,136 @@ test("maintenance lock rejects listing and every mutation lifecycle across modul
     });
     await fs.access(path.join(dataDir, ...READY_MARKER_PATH.split("/")));
     await assertMissing(dataDir, MAINTENANCE_LOCK_PATH);
+  });
+});
+
+test("two concurrent migrations allow only one owner to enter progress", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    const record = recordAt("2026-04-04T00:00:00.000Z", 32);
+    await writeJson(dataDir, record.recordPath, record);
+
+    let signalProgress;
+    const progressEntered = new Promise((resolve) => { signalProgress = resolve; });
+    let releaseProgress;
+    const progressPaused = new Promise((resolve) => { releaseProgress = resolve; });
+    let firstProgressCount = 0;
+    let secondProgressCount = 0;
+    const first = storage.migrateRecordIndex({
+      async onProgress() {
+        firstProgressCount += 1;
+        signalProgress();
+        await progressPaused;
+      }
+    });
+
+    await progressEntered;
+    const secondStorage = await import(`../lib/storage.mjs?concurrent-migration-test=${randomUUID()}`);
+    await assert.rejects(
+      () => secondStorage.migrateRecordIndex({
+        onProgress() {
+          secondProgressCount += 1;
+        }
+      }),
+      (error) => error.status === 503 && error.code === "migration_lock_held"
+    );
+
+    assert.equal(firstProgressCount, 1);
+    assert.equal(secondProgressCount, 0);
+    releaseProgress();
+    assert.deepEqual(await first, {
+      scanned: 1,
+      created: 1,
+      repaired: 0,
+      skipped: 0,
+      failed: 0
+    });
+  });
+});
+
+test("maintenance heartbeat cannot overwrite a replacement owner", async () => {
+  await withLocalStorage(async ({ storage }) => {
+    const record = recordAt("2026-04-05T00:00:00.000Z", 33);
+    let sequence = 0;
+    let raceArmed = false;
+    let raceTriggered = false;
+    const entries = new Map([
+      [record.recordPath, { body: JSON.stringify(record), etag: `v${++sequence}` }]
+    ]);
+    const preconditionFailed = () => {
+      const error = new Error("Blob precondition failed");
+      error.status = 412;
+      return error;
+    };
+    const blobSdk = {
+      async put(storagePath, body, options = {}) {
+        if (options.allowOverwrite === false && entries.has(storagePath)) {
+          const error = new Error("Blob already exists");
+          error.status = 409;
+          throw error;
+        }
+        if (
+          storagePath === MAINTENANCE_LOCK_PATH
+          && options.allowOverwrite === true
+          && raceArmed
+          && !raceTriggered
+        ) {
+          entries.set(storagePath, {
+            body: JSON.stringify({ owner: "replacement-owner", expiresAt: "diagnostic-only" }),
+            etag: `v${++sequence}`
+          });
+          raceTriggered = true;
+        }
+        const current = entries.get(storagePath);
+        if (options.ifMatch && current?.etag !== options.ifMatch) {
+          throw preconditionFailed();
+        }
+        entries.set(storagePath, {
+          body: typeof body === "string" ? body : Buffer.from(body).toString("utf8"),
+          etag: `v${++sequence}`
+        });
+        return { pathname: storagePath, etag: `v${sequence}` };
+      },
+      async get(storagePath) {
+        const entry = entries.get(storagePath);
+        if (!entry) return null;
+        return {
+          statusCode: 200,
+          stream: new Blob([entry.body]).stream(),
+          blob: { etag: entry.etag },
+          headers: new Headers({ etag: entry.etag })
+        };
+      },
+      async del(storagePaths, options = {}) {
+        const paths = Array.isArray(storagePaths) ? storagePaths : [storagePaths];
+        if (options.ifMatch && entries.get(paths[0])?.etag !== options.ifMatch) {
+          throw preconditionFailed();
+        }
+        for (const storagePath of paths) entries.delete(storagePath);
+      },
+      async list({ prefix }) {
+        return {
+          blobs: [...entries.keys()]
+            .filter((storagePath) => storagePath.startsWith(prefix))
+            .sort()
+            .map((pathname) => ({ pathname })),
+          hasMore: false
+        };
+      }
+    };
+
+    await assert.rejects(
+      () => storage.migrateRecordIndex({
+        blobSdk,
+        leaseHeartbeatMs: 5,
+        leaseTtlMs: 30,
+        async onProgress() {
+          raceArmed = true;
+          await waitFor(() => raceTriggered, "maintenance heartbeat did not run");
+        }
+      }),
+      (error) => error.status === 503 && error.code === "record_index_lease_lost"
+    );
+    assert.equal(JSON.parse(entries.get(MAINTENANCE_LOCK_PATH).body).owner, "replacement-owner");
   });
 });
 
@@ -431,9 +569,13 @@ test("migration waits for an existing writer lease and rejects new mutations wit
   });
 });
 
-test("migration wait timeout releases its owner lease and preserves readiness", async () => {
+test("migration times out without deleting an expired operation lease", async () => {
   await withLocalStorage(async ({ dataDir, storage }) => {
-    await writeJson(dataDir, `${WRITER_LEASE_PREFIX}active-writer.json`, activeLease("active-writer"));
+    const expiredLeasePath = `${WRITER_LEASE_PREFIX}expired-writer.json`;
+    await writeJson(dataDir, expiredLeasePath, {
+      owner: "expired-writer",
+      expiresAt: new Date(Date.now() - 1000).toISOString()
+    });
     await writeJson(dataDir, READY_MARKER_PATH, {
       version: 1,
       completedAt: "2026-06-04T00:00:00.000Z"
@@ -444,27 +586,72 @@ test("migration wait timeout releases its owner lease and preserves readiness", 
         leasePollIntervalMs: 5,
         leaseWaitTimeoutMs: 25
       }),
-      (error) => error.status === 503 && error.code === "record_index_lease_timeout"
+      (error) => error.status === 503 && error.code === "maintenance_wait_timeout"
     );
 
     await assertMissing(dataDir, MAINTENANCE_LOCK_PATH);
+    await fs.access(path.join(dataDir, ...expiredLeasePath.split("/")));
     await fs.access(path.join(dataDir, ...READY_MARKER_PATH.split("/")));
   });
 });
 
-test("expired maintenance owner is recovered and ordinary requests still honor readiness", async () => {
+test("expired maintenance lock still rejects migration without takeover", async () => {
   await withLocalStorage(async ({ dataDir, storage }) => {
-    const record = recordAt("2026-06-05T00:00:00.000Z", 52);
-    await writeJson(dataDir, record.recordPath, record);
-    await writeJson(dataDir, buildRecordIndexPath(record), buildRecordIndexDocument(record));
     await writeJson(dataDir, MAINTENANCE_LOCK_PATH, {
       owner: "expired-owner",
       expiresAt: new Date(Date.now() - 1000).toISOString()
     });
+
+    await assert.rejects(
+      () => storage.migrateRecordIndex(),
+      (error) => error.status === 503 && error.code === "migration_lock_held"
+    );
+    await fs.access(path.join(dataDir, ...MAINTENANCE_LOCK_PATH.split("/")));
+  });
+});
+
+test("malformed maintenance lock fails quickly without deletion", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    const lockPath = path.join(dataDir, ...MAINTENANCE_LOCK_PATH.split("/"));
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
+    await fs.writeFile(lockPath, "{malformed-json", "utf8");
+
+    const startedAt = Date.now();
+    await assert.rejects(
+      () => storage.migrateRecordIndex(),
+      (error) => error.status === 503 && error.code === "migration_lock_held"
+    );
+    assert.ok(Date.now() - startedAt < 500);
+    assert.equal(await fs.readFile(lockPath, "utf8"), "{malformed-json");
+  });
+});
+
+test("explicit recovery removes maintenance state and a full migration rebuilds readiness", async () => {
+  await withLocalStorage(async ({ dataDir, storage }) => {
+    const record = recordAt("2026-06-05T00:00:00.000Z", 52);
+    const indexPath = buildRecordIndexPath(record);
+    await writeJson(dataDir, record.recordPath, record);
+    await writeJson(dataDir, indexPath, buildRecordIndexDocument(record));
+    await writeJson(dataDir, MAINTENANCE_LOCK_PATH, {
+      owner: "stopped-admin",
+      expiresAt: new Date(Date.now() - 1000).toISOString()
+    });
+    await writeJson(dataDir, `${READER_LEASE_PREFIX}orphan-reader.json`, activeLease("orphan-reader"));
+    await writeJson(dataDir, `${WRITER_LEASE_PREFIX}orphan-writer.json`, activeLease("orphan-writer"));
     await writeJson(dataDir, READY_MARKER_PATH, {
       version: 1,
       completedAt: "2000-01-01T00:00:00.000Z"
     });
+
+    assert.equal(typeof storage.recoverRecordIndexMaintenance, "function");
+    const recovery = await storage.recoverRecordIndexMaintenance();
+    assert.equal(recovery.requiresFullMigration, true);
+    assert.match(recovery.message, /full.*migration/i);
+    await assertMissing(dataDir, MAINTENANCE_LOCK_PATH);
+    assert.deepEqual(await listLeaseFiles(dataDir, READER_LEASE_PREFIX), []);
+    assert.deepEqual(await listLeaseFiles(dataDir, WRITER_LEASE_PREFIX), []);
+    await assertMissing(dataDir, READY_MARKER_PATH);
+    await fs.access(path.join(dataDir, ...indexPath.split("/")));
 
     assert.deepEqual(await storage.migrateRecordIndex(), {
       scanned: 1,
@@ -473,46 +660,33 @@ test("expired maintenance owner is recovered and ordinary requests still honor r
       skipped: 1,
       failed: 0
     });
-    const ready = JSON.parse(await fs.readFile(
-      path.join(dataDir, ...READY_MARKER_PATH.split("/")),
-      "utf8"
-    ));
-    assert.notEqual(ready.completedAt, "2000-01-01T00:00:00.000Z");
-    await assertMissing(dataDir, MAINTENANCE_LOCK_PATH);
-
-    await fs.rm(path.join(dataDir, ...READY_MARKER_PATH.split("/")));
-    await writeJson(dataDir, MAINTENANCE_LOCK_PATH, {
-      owner: "expired-owner-2",
-      expiresAt: new Date(Date.now() - 1000).toISOString()
-    });
-    await assert.rejects(
-      () => storage.listRecordsPage({
-        limit: 50,
-        cursor: null,
-        query: "",
-        documentType: ""
-      }),
-      (error) => error.status === 503 && error.code === "record_index_not_ready"
-    );
-    await assertMissing(dataDir, MAINTENANCE_LOCK_PATH);
+    await fs.access(path.join(dataDir, ...READY_MARKER_PATH.split("/")));
   });
 });
 
-test("legacy maintenance owner without an expiry cannot become a permanent lock", async () => {
-  await withLocalStorage(async ({ dataDir, storage }) => {
-    await writeJson(dataDir, MAINTENANCE_LOCK_PATH, {
-      owner: "legacy-owner",
-      startedAt: "2000-01-01T00:00:00.000Z"
-    });
+test("migration CLI exposes explicit lock recovery", async () => {
+  await withLocalStorage(async ({ dataDir }) => {
+    await writeJson(dataDir, MAINTENANCE_LOCK_PATH, { owner: "stopped-admin" });
+    await writeJson(dataDir, `${WRITER_LEASE_PREFIX}orphan-writer.json`, activeLease("orphan-writer"));
+    await writeJson(dataDir, READY_MARKER_PATH, { version: 1 });
 
-    assert.deepEqual(await storage.migrateRecordIndex(), {
-      scanned: 0,
-      created: 0,
-      repaired: 0,
-      skipped: 0,
-      failed: 0
-    });
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [fileURLToPath(new URL("../scripts/migrate-record-index.mjs", import.meta.url)), "--recover-lock"],
+      {
+        env: {
+          ...process.env,
+          HTML_WORKBENCH_DATA_DIR: dataDir,
+          BLOB_READ_WRITE_TOKEN: "",
+          VERCEL: ""
+        }
+      }
+    );
+
+    assert.match(stdout, /full.*migration/i);
     await assertMissing(dataDir, MAINTENANCE_LOCK_PATH);
+    assert.deepEqual(await listLeaseFiles(dataDir, WRITER_LEASE_PREFIX), []);
+    await assertMissing(dataDir, READY_MARKER_PATH);
   });
 });
 
@@ -528,7 +702,7 @@ test("writer lease is released when a mutation throws", async () => {
   });
 });
 
-test("package scripts expose live and dry-run record index migration", async () => {
+test("package scripts expose live, dry-run, and recovery record index commands", async () => {
   const packageJson = JSON.parse(
     await fs.readFile(new URL("../package.json", import.meta.url), "utf8")
   );
@@ -536,5 +710,9 @@ test("package scripts expose live and dry-run record index migration", async () 
   assert.equal(
     packageJson.scripts["migrate:record-index:dry-run"],
     "node scripts/migrate-record-index.mjs --dry-run"
+  );
+  assert.equal(
+    packageJson.scripts["migrate:record-index:recover"],
+    "node scripts/migrate-record-index.mjs --recover-lock"
   );
 });

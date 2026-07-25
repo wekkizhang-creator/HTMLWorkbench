@@ -94,7 +94,14 @@ function createMemoryBlobSdk(initialEntries, { beforeFirstIndexList } = {}) {
       typeof value === "string" ? value : JSON.stringify(value)
     ])
   );
+  let etagSequence = 0;
+  const etags = new Map([...store.keys()].map((storagePath) => [storagePath, `v${++etagSequence}`]));
   let indexListCalls = 0;
+  const preconditionFailed = () => {
+    const error = new Error("Blob precondition failed");
+    error.status = 412;
+    return error;
+  };
 
   return {
     store,
@@ -104,22 +111,35 @@ function createMemoryBlobSdk(initialEntries, { beforeFirstIndexList } = {}) {
         conflict.status = 409;
         throw conflict;
       }
+      if (options.ifMatch && etags.get(storagePath) !== options.ifMatch) {
+        throw preconditionFailed();
+      }
       const text = typeof body === "string"
         ? body
         : Buffer.from(body).toString("utf8");
       store.set(storagePath, text);
-      return { pathname: storagePath, url: storagePath };
+      const etag = `v${++etagSequence}`;
+      etags.set(storagePath, etag);
+      return { pathname: storagePath, url: storagePath, etag };
     },
     async get(storagePath) {
       if (!store.has(storagePath)) return null;
+      const etag = etags.get(storagePath);
       return {
         statusCode: 200,
-        stream: new Blob([store.get(storagePath)]).stream()
+        stream: new Blob([store.get(storagePath)]).stream(),
+        blob: { etag },
+        headers: new Headers({ etag })
       };
     },
-    async del(storagePaths) {
-      for (const storagePath of Array.isArray(storagePaths) ? storagePaths : [storagePaths]) {
+    async del(storagePaths, options = {}) {
+      const paths = Array.isArray(storagePaths) ? storagePaths : [storagePaths];
+      if (options.ifMatch && etags.get(paths[0]) !== options.ifMatch) {
+        throw preconditionFailed();
+      }
+      for (const storagePath of paths) {
         store.delete(storagePath);
+        etags.delete(storagePath);
       }
     },
     async list({ cursor, limit = 1000, prefix }) {
