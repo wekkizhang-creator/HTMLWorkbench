@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "node deploy/self-host/validate-env.mjs --profile vercel",
   "rewrites": [
     {
       "source": "/healthz",

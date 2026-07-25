@@ -15,11 +15,28 @@ npm run dev
 ## Vercel 部署
 
 1. 在 Vercel 导入仓库。
-2. 创建并连接 Vercel Blob Store。
-3. 配置 `BLOB_READ_WRITE_TOKEN`。
-4. Framework Preset 选择 `Other`，不需要构建命令。
+2. 创建并连接 **Private** Vercel Blob Store。
+3. 在 Production 和 Preview 环境显式配置下列全部变量：
+
+```text
+HTML_WORKBENCH_ADMIN_ORIGIN=https://ho.wekki.fun
+HTML_WORKBENCH_PUBLIC_ORIGIN=https://page.wekki.fun
+HTML_WORKBENCH_PASSWORD=885688
+HTML_WORKBENCH_AUTH_SECRET=<independent high-entropy random secret, at least 32 bytes>
+HTML_WORKBENCH_DOWNLOAD_PASSWORD=885688
+HTML_WORKBENCH_CURSOR_SECRET=<independent random cursor secret>
+BLOB_READ_WRITE_TOKEN=<private Blob read-write token>
+```
+
+4. Framework Preset 选择 `Other`。不要覆盖仓库中的 Build Command：
+   `node deploy/self-host/validate-env.mjs --profile vercel`。
 
 `/view/:id` 由 `vercel.json` rewrite 到 `/api/view?id=:id`。自托管支持最大 30 MB 的代理请求；Vercel Serverless 的请求体限制不适合相同大小的直传。
+`vercel.json` 的构建门禁和运行时门禁都会校验以上变量；缺失、空值、
+`change-this-*` 占位值、弱签名密钥，或不精确的正式域名都会 fail closed。
+`HTML_WORKBENCH_PASSWORD` 可以显式配置为 `885688`，但
+`HTML_WORKBENCH_AUTH_SECRET` 不得与密码相同，必须使用独立强随机值。可用
+`openssl rand -base64 48` 生成。
 
 ## 校验
 
@@ -35,10 +52,11 @@ Production uses two Node processes from the same immutable release:
 - Immutable releases: `/opt/html-workbench/releases/<full-git-sha>`
 - Active release symlink: `/opt/html-workbench/current`
 - Legacy checkout: existing files directly under `/opt/html-workbench` are left untouched
-- Shared data: `/var/lib/html-workbench`, owned by `htmlworkbench:htmlworkbench`
-- Admin: `html-workbench.service`, `127.0.0.1:3000`, read/write
-- Content: `html-workbench-content.service`, `127.0.0.1:3001`, read-only
-- Environment file: `/etc/html-workbench.env`
+- Shared data: `/var/lib/html-workbench`, owned by `htmlworkbench-admin:htmlworkbench-data`, directories `2750`, files `0640`
+- Admin: `html-workbench.service`, Unix user/group `htmlworkbench-admin`, `127.0.0.1:3000`, read/write
+- Content: `html-workbench-content.service`, Unix user/group `htmlworkbench-content`, `127.0.0.1:3001`, read-only through `htmlworkbench-data`
+- Admin environment: `/etc/html-workbench.env`, `root:htmlworkbench-admin`, mode `0640`
+- Content environment: `/etc/html-workbench-content.env`, `root:htmlworkbench-content`, mode `0640`, no management secrets
 
 ### DNS
 
@@ -55,7 +73,7 @@ TTL: 600
 
 ### Environment
 
-Create `/etc/html-workbench.env` with mode `0640`, owner `root`, and group `htmlworkbench`:
+Create `/etc/html-workbench.env` with mode `0640`, owner `root`, and group `htmlworkbench-admin`:
 
 ```text
 HTML_WORKBENCH_DATA_DIR=/var/lib/html-workbench
@@ -67,7 +85,7 @@ HTML_WORKBENCH_DOWNLOAD_PASSWORD=<separate download password>
 HTML_WORKBENCH_CURSOR_SECRET=<random cursor-signing secret>
 ```
 
-Do not commit real credentials. All four credentials are required and must be explicitly configured and non-empty so runtime code cannot silently use fallback values. Public `change-this-*` placeholders are rejected. The required management and download value `885688` is valid when it is explicitly present in the environment file. The deploy preflight uses `systemd-run` with `EnvironmentFile=/etc/html-workbench.env`, so systemd quote handling and duplicate-key last-wins behavior are validated before either service is stopped. Both systemd units run the same validator through `ExecStartPre` on every start.
+Do not commit real credentials. All four credentials are required and must be explicitly configured so runtime code cannot silently use fallback values. Public `change-this-*` placeholders are rejected. Management and download passwords may explicitly remain `885688`; `HTML_WORKBENCH_AUTH_SECRET` must be independent from that password, at least 32 bytes, and high entropy. The deploy preflight uses `systemd-run` with `EnvironmentFile=/etc/html-workbench.env`, so systemd quote handling and duplicate-key last-wins behavior are validated before either service is stopped. Both systemd units run the strict validator through `ExecStartPre` on every start.
 
 ### Managed Nginx configuration
 
@@ -125,15 +143,17 @@ sudo git -C "$DRY_RUN_RELEASE" checkout --detach FETCH_HEAD
 test "$(sudo git -C "$DRY_RUN_RELEASE" rev-parse HEAD)" = "$TARGET_SHA"
 sudo npm --prefix "$DRY_RUN_RELEASE" ci --omit=dev
 sudo systemd-run --wait --collect --pipe \
-  --property=User=htmlworkbench \
-  --property=Group=htmlworkbench \
+  --property=User=htmlworkbench-admin \
+  --property=Group=htmlworkbench-admin \
   --property=EnvironmentFile=/etc/html-workbench.env \
   /usr/bin/node "$DRY_RUN_RELEASE/deploy/self-host/validate-env.mjs"
 sudo systemctl stop html-workbench
 sudo systemctl stop html-workbench-content 2>/dev/null || true
 sudo systemd-run --wait --collect --pipe \
-  --property=User=htmlworkbench \
-  --property=Group=htmlworkbench \
+  --property=User=htmlworkbench-admin \
+  --property=Group=htmlworkbench-admin \
+  --property=SupplementaryGroups=htmlworkbench-data \
+  --property=UMask=0027 \
   --property=WorkingDirectory="$DRY_RUN_RELEASE" \
   --property=EnvironmentFile=/etc/html-workbench.env \
   /usr/bin/npm run migrate:record-index:dry-run
@@ -152,8 +172,10 @@ sudo systemctl stop html-workbench-content 2>/dev/null || true
 systemctl list-units 'html-workbench-record-index-migration-*'
 sudo test -f "$RECOVERY_RELEASE/.html-workbench-release-ready"
 sudo systemd-run --wait --collect --pipe \
-  --property=User=htmlworkbench \
-  --property=Group=htmlworkbench \
+  --property=User=htmlworkbench-admin \
+  --property=Group=htmlworkbench-admin \
+  --property=SupplementaryGroups=htmlworkbench-data \
+  --property=UMask=0027 \
   --property=WorkingDirectory="$RECOVERY_RELEASE" \
   --property=EnvironmentFile=/etc/html-workbench.env \
   /usr/bin/npm run migrate:record-index:recover
@@ -227,6 +249,11 @@ Authenticated admin writes require both the exact admin `Origin` and an
 loads this token from `GET /api/auth` and sends it on upload, replace, rollback,
 delete, and logout requests. Login itself has no existing session token, so its
 POST is protected by the exact admin Origin check.
+Logout persists a hashed session revocation tombstone in local shared storage or
+Private Vercel Blob before clearing the cookie. Authorization bypasses Blob cache
+for revocation reads, so an old Cookie plus its old CSRF token cannot write after
+logout. Expired tombstones are cleaned in bounded batches on later logouts.
+
 
 Self-hosted content runs with `/etc/html-workbench-content.env`:
 
@@ -237,10 +264,16 @@ HTML_WORKBENCH_PUBLIC_ORIGIN=https://page.wekki.fun
 ```
 
 Deployment owns this non-secret file and validates it with the `content-host`
-profile. The content systemd unit and Compose service must not receive
+profile. It runs content as the independent `htmlworkbench-content` identity;
+that identity cannot read the `root:htmlworkbench-admin` mode `0640` admin
+environment. Shared data uses a setgid `htmlworkbench-data` group: admin owns
+and writes it, while systemd and the read-only mount constrain content to reads.
+The content systemd unit and Compose service must not receive
 `HTML_WORKBENCH_PASSWORD`, `HTML_WORKBENCH_AUTH_SECRET`,
 `HTML_WORKBENCH_DOWNLOAD_PASSWORD`, or `HTML_WORKBENCH_CURSOR_SECRET`. Admin and
-migration continue using the strict credential profile on every startup.
+migration continue using the strict credential profile on every startup. Both
+environment files are captured before deployment changes and restored with
+their previous content, mode, and ownership on validation or activation failure.
 Obtain the host public key through a trusted server console or hosting control plane, not through the deployment SSH connection. For example, read `/etc/ssh/ssh_host_ed25519_key.pub` locally on the server, construct the `known_hosts` line above, and compare its fingerprint out of band with:
 
 ```bash

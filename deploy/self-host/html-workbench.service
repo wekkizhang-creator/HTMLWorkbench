@@ -4,8 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=htmlworkbench
-Group=htmlworkbench
+User=htmlworkbench-admin
+Group=htmlworkbench-admin
+SupplementaryGroups=htmlworkbench-data
 WorkingDirectory=/opt/html-workbench/current
 Environment=NODE_ENV=production
 Environment=HTML_WORKBENCH_ROLE=admin

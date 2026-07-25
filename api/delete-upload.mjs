@@ -23,7 +23,7 @@ import { parseZipWebsite } from "../lib/zip.mjs";
 
 export async function DELETE(request) {
   try {
-    const failure = managementRequestFailure(request);
+    const failure = await managementRequestFailure(request);
     if (failure) return error(failure.message, failure.status);
     return await withRecordMutation(async () => {
       const id = new URL(request.url).searchParams.get("id");
@@ -43,7 +43,7 @@ export async function DELETE(request) {
 
 export async function PUT(request) {
   try {
-    const failure = managementRequestFailure(request);
+    const failure = await managementRequestFailure(request);
     if (failure) return error(failure.message, failure.status);
     return await withRecordMutation(async () => {
       const id = new URL(request.url).searchParams.get("id");
@@ -102,7 +102,7 @@ export async function PUT(request) {
 
 export async function PATCH(request) {
   try {
-    const failure = managementRequestFailure(request);
+    const failure = await managementRequestFailure(request);
     if (failure) return error(failure.message, failure.status);
     return await withRecordMutation(async () => {
       const id = new URL(request.url).searchParams.get("id");

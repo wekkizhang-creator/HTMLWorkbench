@@ -1,5 +1,12 @@
 import { fileURLToPath } from "node:url";
 
+import {
+  MANAGEMENT_CREDENTIAL_NAMES,
+  PRODUCTION_ADMIN_ORIGIN,
+  PRODUCTION_PUBLIC_ORIGIN,
+  validateAdminCredentials
+} from "../../lib/security-config.mjs";
+
 const REQUIRED_VALUES = Object.freeze({
   host: Object.freeze({
     HTML_WORKBENCH_DATA_DIR: "/var/lib/html-workbench",
@@ -13,18 +20,20 @@ const REQUIRED_VALUES = Object.freeze({
   })
 });
 
-const REQUIRED_SECRETS = Object.freeze([
-  "HTML_WORKBENCH_PASSWORD",
-  "HTML_WORKBENCH_AUTH_SECRET",
-  "HTML_WORKBENCH_DOWNLOAD_PASSWORD",
-  "HTML_WORKBENCH_CURSOR_SECRET"
-]);
-
 const PROFILE_CONFIG = Object.freeze({
-  host: Object.freeze({ values: REQUIRED_VALUES.host, requireSecrets: true, forbidSecrets: false }),
-  container: Object.freeze({ values: REQUIRED_VALUES.container, requireSecrets: true, forbidSecrets: false }),
-  "content-host": Object.freeze({ values: REQUIRED_VALUES.host, requireSecrets: false, forbidSecrets: true }),
-  "content-container": Object.freeze({ values: REQUIRED_VALUES.container, requireSecrets: false, forbidSecrets: true })
+  host: Object.freeze({ values: REQUIRED_VALUES.host, requireSecrets: true, requireBlob: false, forbidSecrets: false }),
+  container: Object.freeze({ values: REQUIRED_VALUES.container, requireSecrets: true, requireBlob: false, forbidSecrets: false }),
+  "content-host": Object.freeze({ values: REQUIRED_VALUES.host, requireSecrets: false, requireBlob: false, forbidSecrets: true }),
+  "content-container": Object.freeze({ values: REQUIRED_VALUES.container, requireSecrets: false, requireBlob: false, forbidSecrets: true }),
+  vercel: Object.freeze({
+    values: Object.freeze({
+      HTML_WORKBENCH_ADMIN_ORIGIN: PRODUCTION_ADMIN_ORIGIN,
+      HTML_WORKBENCH_PUBLIC_ORIGIN: PRODUCTION_PUBLIC_ORIGIN
+    }),
+    requireSecrets: true,
+    requireBlob: true,
+    forbidSecrets: false
+  })
 });
 
 function parseValue(raw, lineNumber) {
@@ -103,15 +112,10 @@ export function validateEffectiveEnvironment(environment = process.env, { profil
     }
   }
   if (profileConfig.requireSecrets) {
-    for (const name of REQUIRED_SECRETS) {
-      const value = environment[name];
-      if (typeof value !== "string" || value.trim() === "" || /^change-this-/i.test(value)) {
-        throw new Error(`${name} must be a non-empty production credential`);
-      }
-    }
+    validateAdminCredentials(environment, { requireBlob: profileConfig.requireBlob });
   }
   if (profileConfig.forbidSecrets) {
-    for (const name of REQUIRED_SECRETS) {
+    for (const name of MANAGEMENT_CREDENTIAL_NAMES) {
       if (environment[name] !== undefined) {
         throw new Error(`Content profile must not receive ${name}`);
       }

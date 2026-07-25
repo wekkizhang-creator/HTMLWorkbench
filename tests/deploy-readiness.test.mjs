@@ -53,7 +53,7 @@ HTML_WORKBENCH_ADMIN_ORIGIN="https://ho.wekki.fun"
 HTML_WORKBENCH_PUBLIC_ORIGIN='https://page.wekki.fun'
 HTML_WORKBENCH_PASSWORD=old-value
 HTML_WORKBENCH_PASSWORD="885688"
-HTML_WORKBENCH_AUTH_SECRET='production auth secret'
+HTML_WORKBENCH_AUTH_SECRET='oJPyDUkzBK7U78fZp1yJhMUJ8iL8dGeK6cX4HnJrT40'
 HTML_WORKBENCH_DOWNLOAD_PASSWORD="885688"
 HTML_WORKBENCH_CURSOR_SECRET='production cursor secret'
 `;
@@ -82,7 +82,11 @@ async function createHarness(options = {}) {
   await fs.mkdir(paths.appDir, { recursive: true });
   await writeFile(path.join(paths.appDir, "legacy-sentinel.txt"), "legacy checkout remains untouched");
   await writeFile(paths.envFile, options.environmentFile ?? validEnvironmentFile());
-  await writeFile(paths.adminUnit, "old admin unit\n");
+  await writeFile(paths.contentEnvFile, options.contentEnvironmentFile ?? "OLD_CONTENT_ENV=preserve\n");
+  await writeFile(
+    paths.adminUnit,
+    options.adminUnit ?? "[Service]\nUser=htmlworkbench\nGroup=htmlworkbench\n"
+  );
   if (options.contentUnitExists !== false) await writeFile(paths.contentUnit, "old content unit\n");
   if (options.hostExists !== false) await writeFile(paths.nginxHost, options.hostConfig ?? certbotHostConfig());
   await writeFile(paths.adminSnippet, "old admin routes\n");
@@ -97,6 +101,8 @@ async function createHarness(options = {}) {
   let nginxTestCount = 0;
   const run = async (command, args = [], runOptions = {}) => {
     commands.push({ command, args: [...args], cwd: runOptions.cwd });
+    if (command === "getent" && args[0] === "group") return { code: 2, stdout: "", stderr: "" };
+    if (command === "id") return { code: 1, stdout: "", stderr: "" };
     if (command === "git" && args[0] === "checkout") await copyReleaseFixture(runOptions.cwd);
     if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: `${DEPLOY_SHA}\n`, stderr: "" };
     if (command === "systemctl" && args[0] === "is-active") {
@@ -189,11 +195,21 @@ test("first install stages the exact SHA without mutating the legacy checkout", 
       .filter(({ entry }) => entry.command === "systemd-run" && entry.args.some((arg) => arg.endsWith("validate-env.mjs")));
     const stopIndex = commandIndex(harness.commands, ({ command, args }) => command === "systemctl" && args[0] === "stop");
     const migrationIndex = commandIndex(harness.commands, ({ command, args }) => command === "systemd-run" && args.includes("migrate:record-index"));
+    const dataPermissionIndex = commandIndex(harness.commands, ({ command, args }) =>
+      command === "chown" && args.join(" ") === `-R htmlworkbench-admin:htmlworkbench-data ${harness.paths.dataDir}`
+    );
     assert.ok(preflightIndex !== -1 && preflightIndex < stopIndex);
     assert.equal(preflights.length, 2);
     assert.ok(preflights.every(({ index }) => index < stopIndex));
     assert.match(preflights[1].entry.args.join(" "), /html-workbench-content\.env.*--profile content-host/);
+    assert.ok(stopIndex < dataPermissionIndex, "data ownership changes only after the old services stop");
+    assert.ok(dataPermissionIndex < migrationIndex, "data ownership is ready before migration");
     assert.ok(stopIndex < migrationIndex);
+    assert.match(preflights[0].entry.args.join(" "), /User=htmlworkbench-admin.*Group=htmlworkbench-admin/);
+    assert.match(preflights[1].entry.args.join(" "), /User=htmlworkbench-content.*Group=htmlworkbench-content/);
+    const migration = harness.commands.find(({ command, args }) => command === "systemd-run" && args.includes("migrate:record-index"));
+    assert.match(migration.args.join(" "), /User=htmlworkbench-admin.*Group=htmlworkbench-admin.*SupplementaryGroups=htmlworkbench-data/);
+    assert.match(migration.args.join(" "), /UMask=0027/);
     assert.match(harness.commands[preflightIndex].args.join(" "), /EnvironmentFile=.*html-workbench\.env/);
     const healthIndexes = harness.commands
       .map((entry, index) => ({ entry, index }))
@@ -216,6 +232,38 @@ test("first install stages the exact SHA without mutating the legacy checkout", 
     assert.match(hostConfig, /html-workbench-content-routes\.conf/);
     const contentEnvironment = await fs.readFile(harness.paths.contentEnvFile, "utf8");
     assert.doesNotMatch(contentEnvironment, /PASSWORD|AUTH_SECRET|DOWNLOAD_PASSWORD|CURSOR_SECRET/);
+    for (const group of ["htmlworkbench-admin", "htmlworkbench-content", "htmlworkbench-data"]) {
+      assert.ok(harness.commands.some(({ command, args }) =>
+        command === "groupadd" && args.includes("--system") && args.at(-1) === group
+      ), `missing system group ${group}`);
+    }
+    for (const [user, group] of [
+      ["htmlworkbench-admin", "htmlworkbench-admin"],
+      ["htmlworkbench-content", "htmlworkbench-content"]
+    ]) {
+      assert.ok(harness.commands.some(({ command, args }) =>
+        command === "useradd"
+        && args.includes("--system")
+        && args.includes("--gid")
+        && args.includes(group)
+        && args.at(-1) === user
+      ), `missing isolated system user ${user}`);
+    }
+    assert.ok(harness.commands.some(({ command, args }) =>
+      command === "chown" && args.join(" ") === `-R htmlworkbench-admin:htmlworkbench-data ${harness.paths.dataDir}`
+    ));
+    assert.ok(harness.commands.some(({ command, args }) =>
+      command === "find" && args.join(" ").includes(`${harness.paths.dataDir} -type d -exec chmod 2750`)
+    ));
+    assert.ok(harness.commands.some(({ command, args }) =>
+      command === "find" && args.join(" ").includes(`${harness.paths.dataDir} -type f -exec chmod 0640`)
+    ));
+    assert.ok(harness.commands.some(({ command, args }) =>
+      command === "chown" && args.join(" ") === `root:htmlworkbench-admin ${harness.paths.envFile}`
+    ));
+    assert.ok(harness.commands.some(({ command, args }) =>
+      command === "chown" && args.join(" ") === `root:htmlworkbench-content ${harness.paths.contentEnvFile}`
+    ));
   } finally { await harness.cleanup(); }
 });
 
@@ -247,6 +295,7 @@ test("migration failure restores the prior release and state but keeps content s
     const oldHost = await fs.readFile(harness.paths.nginxHost, "utf8");
     const oldAdminUnit = await fs.readFile(harness.paths.adminUnit, "utf8");
     const oldContentUnit = await fs.readFile(harness.paths.contentUnit, "utf8");
+    const oldContentEnvironment = await fs.readFile(harness.paths.contentEnvFile, "utf8");
     await assert.rejects(deployRelease({ deploySha: DEPLOY_SHA, log: (message) => harness.logs.push(message), paths: harness.paths, repoUrl: REPO_URL, run: harness.run }), /migration failed/);
     assert.equal(path.resolve(await fs.readlink(harness.paths.currentLink)), path.resolve(harness.previousRelease));
     assert.equal(await fs.readFile(harness.paths.adminUnit, "utf8"), oldAdminUnit);
@@ -255,9 +304,18 @@ test("migration failure restores the prior release and state but keeps content s
     assert.equal(harness.serviceState.active.get(ADMIN_SERVICE), true);
     assert.equal(harness.serviceState.active.get(CONTENT_SERVICE), false);
     assert.equal(harness.serviceState.enabled.get(ADMIN_SERVICE), true);
+    assert.equal(await fs.readFile(harness.paths.contentEnvFile, "utf8"), oldContentEnvironment);
     assert.equal(harness.serviceState.enabled.get(CONTENT_SERVICE), false);
     assert.equal(harness.commands.some(({ args }) => args.includes("migrate:record-index:recover")), false);
     assert.match(harness.logs.join("\n"), /data state requires operator review/i);
+    const legacyPermissionIndex = commandIndex(harness.commands, ({ command, args }) =>
+      command === "chown" && args.join(" ") === `-R htmlworkbench:htmlworkbench ${harness.paths.dataDir}`
+    );
+    const restoredAdminStartIndex = harness.commands.findLastIndex(({ command, args }) =>
+      command === "systemctl" && args[0] === "start" && args.includes(ADMIN_SERVICE)
+    );
+    assert.ok(legacyPermissionIndex !== -1, "legacy data ownership is restored with the legacy unit");
+    assert.ok(legacyPermissionIndex < restoredAdminStartIndex, "legacy ownership is restored before the old admin starts");
   } finally { await harness.cleanup(); }
 });
 
@@ -278,7 +336,7 @@ test("post-start Nginx failure restores the prior release, files, service state,
   const harness = await createHarness({ postStartNginxFails: true, adminActive: true, adminEnabled: true, contentActive: true, contentEnabled: false });
   try {
     const snapshots = new Map();
-    for (const filePath of [harness.paths.adminUnit, harness.paths.contentUnit, harness.paths.nginxHost, harness.paths.adminSnippet, harness.paths.contentSnippet]) {
+    for (const filePath of [harness.paths.adminUnit, harness.paths.contentUnit, harness.paths.nginxHost, harness.paths.adminSnippet, harness.paths.contentSnippet, harness.paths.contentEnvFile]) {
       snapshots.set(filePath, await fs.readFile(filePath, "utf8"));
     }
     await assert.rejects(deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, repoUrl: REPO_URL, run: harness.run }), /invalid final nginx/);
@@ -331,17 +389,32 @@ test("deployment rejects an effectively empty quoted credential before stopping 
     environmentFile: validEnvironmentFile().replace('HTML_WORKBENCH_DOWNLOAD_PASSWORD="885688"', 'HTML_WORKBENCH_DOWNLOAD_PASSWORD=""')
   });
   try {
+    const oldContentEnvironment = await fs.readFile(harness.paths.contentEnvFile, "utf8");
     await assert.rejects(
       deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, repoUrl: REPO_URL, run: harness.run }),
       /HTML_WORKBENCH_DOWNLOAD_PASSWORD/
     );
     assert.equal(harness.commands.some(({ command, args }) => command === "systemctl" && args[0] === "stop"), false);
+    assert.equal(await fs.readFile(harness.paths.contentEnvFile, "utf8"), oldContentEnvironment);
   } finally { await harness.cleanup(); }
 });
 test("production environment accepts explicitly configured 885688 credentials", () => {
   const parsed = parseSystemdEnvironmentFile(validEnvironmentFile());
   parsed.HTML_WORKBENCH_PASSWORD = "885688";
   parsed.HTML_WORKBENCH_DOWNLOAD_PASSWORD = "885688";
+  assert.equal(validateEffectiveEnvironment(parsed), true);
+});
+
+test("production environment requires an independent strong auth signing secret", () => {
+  const parsed = parseSystemdEnvironmentFile(validEnvironmentFile());
+  for (const secret of ["", "change-this-auth-secret", "885688", "short-secret", "a".repeat(64)]) {
+    parsed.HTML_WORKBENCH_AUTH_SECRET = secret;
+    assert.throws(
+      () => validateEffectiveEnvironment(parsed),
+      /HTML_WORKBENCH_AUTH_SECRET/
+    );
+  }
+  parsed.HTML_WORKBENCH_AUTH_SECRET = "oJPyDUkzBK7U78fZp1yJhMUJ8iL8dGeK6cX4HnJrT40";
   assert.equal(validateEffectiveEnvironment(parsed), true);
 });
 
@@ -385,12 +458,21 @@ for (const [name, option] of [
     } finally { await harness.cleanup(); }
   });
 }
+
 test("systemd units run the atomically activated current release", async () => {
   const [admin, content] = await Promise.all([fs.readFile("deploy/self-host/html-workbench.service", "utf8"), fs.readFile("deploy/self-host/html-workbench-content.service", "utf8")]);
   for (const service of [admin, content]) {
     assert.match(service, /^WorkingDirectory=\/opt\/html-workbench\/current$/m);
     assert.match(service, /\/opt\/html-workbench\/current\/server\.js/);
   }
+  assert.match(admin, /^User=htmlworkbench-admin$/m);
+  assert.match(admin, /^Group=htmlworkbench-admin$/m);
+  assert.match(admin, /^SupplementaryGroups=htmlworkbench-data$/m);
+  assert.match(content, /^User=htmlworkbench-content$/m);
+  assert.match(content, /^Group=htmlworkbench-content$/m);
+  assert.match(content, /^SupplementaryGroups=htmlworkbench-data$/m);
+  assert.doesNotMatch(content, /^User=htmlworkbench-admin$/m);
+  assert.doesNotMatch(content, /^Group=htmlworkbench-admin$/m);
   assert.match(admin, /^EnvironmentFile=\/etc\/html-workbench\.env$/m);
   assert.match(
     admin,
@@ -410,6 +492,8 @@ test("systemd units run the atomically activated current release", async () => {
   assert.match(content, /^ProtectSystem=strict$/m);
   assert.match(content, /^ReadOnlyPaths=\/var\/lib\/html-workbench$/m);
   assert.doesNotMatch(content, /^ReadWritePaths=/m);
+  assert.match(admin, /^UMask=0027$/m);
+  assert.match(content, /^UMask=0077$/m);
   assert.doesNotMatch(content, /HTML_WORKBENCH_(?:PASSWORD|AUTH_SECRET|DOWNLOAD_PASSWORD|CURSOR_SECRET)/);
 });
 

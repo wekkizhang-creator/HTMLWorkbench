@@ -66,7 +66,7 @@ function containerEnvironment(overrides = {}) {
     HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",
     HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun",
     HTML_WORKBENCH_PASSWORD: "885688",
-    HTML_WORKBENCH_AUTH_SECRET: "production auth secret",
+    HTML_WORKBENCH_AUTH_SECRET: "oJPyDUkzBK7U78fZp1yJhMUJ8iL8dGeK6cX4HnJrT40",
     HTML_WORKBENCH_DOWNLOAD_PASSWORD: "885688",
     HTML_WORKBENCH_CURSOR_SECRET: "production cursor secret",
     ...overrides

@@ -21,7 +21,7 @@ import { parseZipWebsite } from "../lib/zip.mjs";
 export async function GET(request) {
   try {
     if (!isAdminHostRequest(request)) return error("Page does not exist", 404);
-    if (!isAuthorizedRequest(request)) {
+    if (!(await isAuthorizedRequest(request))) {
       return error("Please enter the access password first", 401);
     }
     const result = await listRecordsPage(normalizePageRequest(request.url));
@@ -33,7 +33,7 @@ export async function GET(request) {
 
 export async function POST(request) {
   try {
-    const failure = managementRequestFailure(request);
+    const failure = await managementRequestFailure(request);
     if (failure) return error(failure.message, failure.status);
     return await withRecordMutation(async () => {
       const form = await request.formData();

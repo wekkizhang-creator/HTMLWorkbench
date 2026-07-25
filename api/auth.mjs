@@ -5,13 +5,14 @@ import {
   isAdminHostRequest,
   isAuthorizedRequest,
   managementRequestFailure,
+  revokeAuthorizedSession,
   verifyPassword
 } from "../lib/auth.mjs";
 import { error, json, methodNotAllowed } from "../lib/http.mjs";
 
 export async function GET(request) {
   if (!isAdminHostRequest(request)) return error("Page does not exist", 404);
-  const authenticated = isAuthorizedRequest(request);
+  const authenticated = await isAuthorizedRequest(request);
   return json({
     authenticated,
     csrfToken: authenticated ? createCsrfToken(request.headers.get("cookie") || "") : null
@@ -20,7 +21,7 @@ export async function GET(request) {
 
 export async function POST(request) {
   try {
-    const failure = managementRequestFailure(request, { requireAuth: false, requireCsrf: false });
+    const failure = await managementRequestFailure(request, { requireAuth: false, requireCsrf: false });
     if (failure) return error(failure.message, failure.status);
     const body = await request.json().catch(() => ({}));
     if (!verifyPassword(body.password)) {
@@ -43,18 +44,23 @@ export async function POST(request) {
 }
 
 export async function DELETE(request) {
-  const failure = managementRequestFailure(request);
-  if (failure) return error(failure.message, failure.status);
-  return Response.json(
-    { authenticated: false },
-    {
-      status: 200,
-      headers: {
-        "Cache-Control": "no-store",
-        "Set-Cookie": clearAuthCookie({ secure: new URL(request.url).protocol === "https:" })
+  try {
+    const failure = await managementRequestFailure(request);
+    if (failure) return error(failure.message, failure.status);
+    await revokeAuthorizedSession(request.headers.get("cookie") || "");
+    return Response.json(
+      { authenticated: false },
+      {
+        status: 200,
+        headers: {
+          "Cache-Control": "no-store",
+          "Set-Cookie": clearAuthCookie({ secure: new URL(request.url).protocol === "https:" })
+        }
       }
-    }
-  );
+    );
+  } catch (requestError) {
+    return error(requestError.message || "Logout failed", requestError.status || 500);
+  }
 }
 
 export default {

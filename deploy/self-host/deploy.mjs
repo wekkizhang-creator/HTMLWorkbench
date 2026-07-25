@@ -8,6 +8,11 @@ import { buildManagedHostConfig } from "./nginx-config.mjs";
 const ADMIN_SERVICE = "html-workbench.service";
 const CONTENT_SERVICE = "html-workbench-content.service";
 const SERVICE_NAMES = [ADMIN_SERVICE, CONTENT_SERVICE];
+const ADMIN_USER = "htmlworkbench-admin";
+const ADMIN_GROUP = "htmlworkbench-admin";
+const CONTENT_USER = "htmlworkbench-content";
+const CONTENT_GROUP = "htmlworkbench-content";
+const DATA_GROUP = "htmlworkbench-data";
 const DEPLOY_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 
 function rooted(rootDir, absolutePath) {
@@ -69,7 +74,13 @@ async function fileExists(filePath) {
 async function snapshotFile(filePath) {
   try {
     const stat = await fs.stat(filePath);
-    return { exists: true, contents: await fs.readFile(filePath), mode: stat.mode & 0o777 };
+    return {
+      exists: true,
+      contents: await fs.readFile(filePath),
+      mode: stat.mode & 0o777,
+      uid: stat.uid,
+      gid: stat.gid
+    };
   } catch (error) {
     if (error.code === "ENOENT") return { exists: false };
     throw error;
@@ -91,6 +102,9 @@ async function restoreFile(filePath, snapshot) {
     return;
   }
   await replaceFile(filePath, snapshot.contents, snapshot.mode);
+  if (process.platform !== "win32") {
+    await fs.chown(filePath, snapshot.uid, snapshot.gid);
+  }
 }
 
 async function readLink(linkPath) {
@@ -219,41 +233,71 @@ async function stageRelease({ deploySha, paths, repoUrl, run }) {
   }
 }
 
+async function ensureSystemGroup(run, group) {
+  if ((await run("getent", ["group", group])).code !== 0) {
+    await checked(run, "groupadd", ["--system", group]);
+  }
+}
+
+async function ensureSystemUser(run, user, primaryGroup) {
+  if ((await run("id", ["-u", user])).code !== 0) {
+    await checked(run, "useradd", [
+      "--system",
+      "--gid", primaryGroup,
+      "--groups", DATA_GROUP,
+      "--home", "/opt/html-workbench",
+      "--shell", "/usr/sbin/nologin",
+      user
+    ]);
+    return;
+  }
+  await checked(run, "usermod", ["--append", "--groups", DATA_GROUP, user]);
+}
+
 async function ensureHostPrerequisites({ paths, releaseDir, run }) {
   await fs.mkdir(paths.releasesDir, { recursive: true });
-  await fs.mkdir(paths.dataDir, { recursive: true });
-  if ((await run("id", ["htmlworkbench"])).code !== 0) {
-    await checked(run, "useradd", ["--system", "--home", "/opt/html-workbench", "--shell", "/usr/sbin/nologin", "htmlworkbench"]);
+  for (const group of [ADMIN_GROUP, CONTENT_GROUP, DATA_GROUP]) {
+    await ensureSystemGroup(run, group);
   }
-  await checked(run, "chown", ["-R", "htmlworkbench:htmlworkbench", paths.dataDir]);
+  await ensureSystemUser(run, ADMIN_USER, ADMIN_GROUP);
+  await ensureSystemUser(run, CONTENT_USER, CONTENT_GROUP);
+
+  await fs.mkdir(paths.dataDir, { recursive: true });
   if (!await fileExists(paths.envFile)) {
     await fs.mkdir(path.dirname(paths.envFile), { recursive: true });
     await fs.copyFile(path.join(releaseDir, "deploy/self-host/html-workbench.env.example"), paths.envFile);
   }
-  await checked(run, "chown", ["root:htmlworkbench", paths.envFile]);
+  await checked(run, "chown", [`root:${ADMIN_GROUP}`, paths.envFile]);
   await checked(run, "chmod", ["640", paths.envFile]);
   await replaceFile(
     paths.contentEnvFile,
     await fs.readFile(path.join(releaseDir, "deploy/self-host/html-workbench-content.env.example")),
     0o640
   );
-  await checked(run, "chown", ["root:htmlworkbench", paths.contentEnvFile]);
+  await checked(run, "chown", [`root:${CONTENT_GROUP}`, paths.contentEnvFile]);
+  await checked(run, "chmod", ["640", paths.contentEnvFile]);
+}
+
+async function migrateDataPermissions({ paths, run }) {
+  await checked(run, "chown", ["-R", `${ADMIN_USER}:${DATA_GROUP}`, paths.dataDir]);
+  await checked(run, "find", [paths.dataDir, "-type", "d", "-exec", "chmod", "2750", "{}", "+"]);
+  await checked(run, "find", [paths.dataDir, "-type", "f", "-exec", "chmod", "0640", "{}", "+"]);
 }
 
 async function validateEnvironment({ paths, releaseDir, run }) {
   await checked(run, "systemd-run", [
     "--quiet", "--wait", "--collect", "--pipe",
     `--unit=html-workbench-env-preflight-${Date.now()}-${process.pid}`,
-    "--property=User=htmlworkbench",
-    "--property=Group=htmlworkbench",
+    `--property=User=${ADMIN_USER}`,
+    `--property=Group=${ADMIN_GROUP}`,
     `--property=EnvironmentFile=${paths.envFile}`,
     "/usr/bin/node", path.join(releaseDir, "deploy/self-host/validate-env.mjs")
   ]);
   await checked(run, "systemd-run", [
     "--quiet", "--wait", "--collect", "--pipe",
     `--unit=html-workbench-content-env-preflight-${Date.now()}-${process.pid}`,
-    "--property=User=htmlworkbench",
-    "--property=Group=htmlworkbench",
+    `--property=User=${CONTENT_USER}`,
+    `--property=Group=${CONTENT_GROUP}`,
     `--property=EnvironmentFile=${paths.contentEnvFile}`,
     "/usr/bin/node", path.join(releaseDir, "deploy/self-host/validate-env.mjs"),
     "--profile", "content-host"
@@ -269,8 +313,10 @@ async function migrate({ paths, releaseDir, run }) {
   await checked(run, "systemd-run", [
     "--quiet", "--wait", "--collect", "--pipe",
     `--unit=html-workbench-record-index-migration-${Date.now()}-${process.pid}`,
-    "--property=User=htmlworkbench",
-    "--property=Group=htmlworkbench",
+    `--property=User=${ADMIN_USER}`,
+    `--property=Group=${ADMIN_GROUP}`,
+    `--property=SupplementaryGroups=${DATA_GROUP}`,
+    "--property=UMask=0027",
     `--property=WorkingDirectory=${releaseDir}`,
     "--property=Environment=NODE_ENV=production",
     `--property=EnvironmentFile=${paths.envFile}`,
@@ -290,10 +336,36 @@ async function checkHealth(run, service, port, host) {
 
 async function transactionSnapshot(paths) {
   const files = new Map();
-  for (const filePath of [paths.adminUnit, paths.contentUnit, paths.nginxHost, paths.adminSnippet, paths.contentSnippet]) {
+  for (const filePath of [
+    paths.envFile,
+    paths.contentEnvFile,
+    paths.adminUnit,
+    paths.contentUnit,
+    paths.nginxHost,
+    paths.adminSnippet,
+    paths.contentSnippet
+  ]) {
     files.set(filePath, await snapshotFile(filePath));
   }
   return { files, currentTarget: await readLink(paths.currentLink) };
+}
+
+function legacyAdminIdentity(paths, snapshot) {
+  const unitSnapshot = snapshot.files.get(paths.adminUnit);
+  if (!unitSnapshot?.exists) return null;
+  const unit = unitSnapshot.contents.toString("utf8");
+  const user = unit.match(/^\s*User\s*=\s*([A-Za-z0-9_-]+)\s*$/m)?.[1];
+  if (user !== "htmlworkbench") return null;
+  const group = unit.match(/^\s*Group\s*=\s*([A-Za-z0-9_-]+)\s*$/m)?.[1] || user;
+  return { group, user };
+}
+
+async function restoreLegacyDataPermissions({ paths, run, snapshot }) {
+  const identity = legacyAdminIdentity(paths, snapshot);
+  if (!identity) return;
+  await checked(run, "chown", ["-R", `${identity.user}:${identity.group}`, paths.dataDir]);
+  await checked(run, "find", [paths.dataDir, "-type", "d", "-exec", "chmod", "0750", "{}", "+"]);
+  await checked(run, "find", [paths.dataDir, "-type", "f", "-exec", "chmod", "0640", "{}", "+"]);
 }
 
 async function restoreTransaction({ paths, run, serviceState, snapshot, migrationFailed, log }) {
@@ -301,6 +373,7 @@ async function restoreTransaction({ paths, run, serviceState, snapshot, migratio
   await restoreEnableState(run, serviceState, migrationFailed);
   await restoreLink(paths.currentLink, snapshot.currentTarget);
   for (const [filePath, fileSnapshot] of snapshot.files) await restoreFile(filePath, fileSnapshot);
+  await restoreLegacyDataPermissions({ paths, run, snapshot });
   await checked(run, "systemctl", ["daemon-reload"]);
   await checked(run, "nginx", ["-t"]);
   await checked(run, "systemctl", ["reload", "nginx"]);
@@ -323,25 +396,28 @@ export async function deployRelease({
 
   await fs.mkdir(paths.releasesDir, { recursive: true });
   const releaseDir = await stageRelease({ deploySha, paths, repoUrl, run });
-  await ensureHostPrerequisites({ paths, releaseDir, run });
-  await validateEnvironment({ paths, releaseDir, run });
-
-  const unitSources = {
-    [paths.adminUnit]: await fs.readFile(path.join(releaseDir, "deploy/self-host/html-workbench.service")),
-    [paths.contentUnit]: await fs.readFile(path.join(releaseDir, "deploy/self-host/html-workbench-content.service"))
-  };
-  const adminRoutes = await fs.readFile(path.join(releaseDir, "deploy/self-host/nginx-admin-routes.conf"));
-  const contentRoutes = await fs.readFile(path.join(releaseDir, "deploy/self-host/nginx-content-routes.conf"));
-  const existingHost = await fileExists(paths.nginxHost) ? await fs.readFile(paths.nginxHost, "utf8") : null;
-  const hostCandidate = buildManagedHostConfig(existingHost);
   const snapshot = await transactionSnapshot(paths);
-  const serviceState = await captureServiceState(run);
+  let serviceState;
   let stopped = false;
   let migrationFailed = false;
 
   try {
+    await ensureHostPrerequisites({ paths, releaseDir, run });
+    await validateEnvironment({ paths, releaseDir, run });
+
+    const unitSources = {
+      [paths.adminUnit]: await fs.readFile(path.join(releaseDir, "deploy/self-host/html-workbench.service")),
+      [paths.contentUnit]: await fs.readFile(path.join(releaseDir, "deploy/self-host/html-workbench-content.service"))
+    };
+    const adminRoutes = await fs.readFile(path.join(releaseDir, "deploy/self-host/nginx-admin-routes.conf"));
+    const contentRoutes = await fs.readFile(path.join(releaseDir, "deploy/self-host/nginx-content-routes.conf"));
+    const existingHost = await fileExists(paths.nginxHost) ? await fs.readFile(paths.nginxHost, "utf8") : null;
+    const hostCandidate = buildManagedHostConfig(existingHost);
+    serviceState = await captureServiceState(run);
+
     stopped = true;
     await stopLoadedServices(run, serviceState);
+    await migrateDataPermissions({ paths, run });
     try {
       await migrate({ paths, releaseDir, run });
     } catch (error) {
@@ -367,12 +443,16 @@ export async function deployRelease({
     log(`HTMLWorkbench release ${deploySha} deployed successfully.`);
     return { deploySha, releaseDir };
   } catch (error) {
-    if (stopped) {
-      try {
+    try {
+      if (stopped) {
         await restoreTransaction({ paths, run, serviceState, snapshot, migrationFailed, log });
-      } catch (rollbackError) {
-        throw new AggregateError([error, rollbackError], `Deployment failed and rollback was incomplete: ${rollbackError.message}`);
+      } else {
+        for (const filePath of [paths.envFile, paths.contentEnvFile]) {
+          await restoreFile(filePath, snapshot.files.get(filePath));
+        }
       }
+    } catch (rollbackError) {
+      throw new AggregateError([error, rollbackError], `Deployment failed and rollback was incomplete: ${rollbackError.message}`);
     }
     throw error;
   }
