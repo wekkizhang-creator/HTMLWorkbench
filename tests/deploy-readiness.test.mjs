@@ -1,130 +1,326 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-function assertOrdered(source, patterns) {
-  let cursor = -1;
-  for (const pattern of patterns) {
-    const match = source.slice(cursor + 1).search(pattern);
-    assert.notEqual(match, -1, `missing ordered deployment step: ${pattern}`);
-    cursor += match + 1;
+import { createDeploymentPaths, deployRelease } from "../deploy/self-host/deploy.mjs";
+import { parseSystemdEnvironmentFile, validateEffectiveEnvironment } from "../deploy/self-host/validate-env.mjs";
+import { buildManagedHostConfig, MANAGED_HOST_MARKER } from "../deploy/self-host/nginx-config.mjs";
+
+const DEPLOY_SHA = "a".repeat(40);
+const REPO_URL = "https://github.com/wekkizhang-creator/HTMLWorkbench.git";
+const ADMIN_SERVICE = "html-workbench.service";
+const CONTENT_SERVICE = "html-workbench-content.service";
+
+async function exists(filePath) {
+  try { await fs.access(filePath); return true; } catch { return false; }
+}
+
+async function writeFile(filePath, contents) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, contents);
+}
+
+async function createDirectoryLink(target, linkPath) {
+  await fs.mkdir(path.dirname(linkPath), { recursive: true });
+  await fs.symlink(target, linkPath, process.platform === "win32" ? "junction" : "dir");
+}
+
+function certbotHostConfig() {
+  return `server {
+    listen 443 ssl;
+    server_name ho.wekki.fun;
+    ssl_certificate /etc/letsencrypt/live/ho.wekki.fun/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/ho.wekki.fun/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+    }
+}
+
+server {
+    listen 80;
+    server_name ho.wekki.fun;
+    return 301 https://$host$request_uri;
+}
+`;
+}
+
+function validEnvironmentFile() {
+  return `HTML_WORKBENCH_DATA_DIR=/var/lib/html-workbench
+HTML_WORKBENCH_ADMIN_ORIGIN="https://ho.wekki.fun"
+HTML_WORKBENCH_PUBLIC_ORIGIN='https://page.wekki.fun'
+HTML_WORKBENCH_PASSWORD=old-value
+HTML_WORKBENCH_PASSWORD="production admin password"
+HTML_WORKBENCH_AUTH_SECRET='production auth secret'
+HTML_WORKBENCH_DOWNLOAD_PASSWORD="production download password"
+HTML_WORKBENCH_CURSOR_SECRET='production cursor secret'
+`;
+}
+
+async function copyReleaseFixture(targetDir) {
+  await fs.mkdir(targetDir, { recursive: true });
+  await fs.cp("deploy", path.join(targetDir, "deploy"), { recursive: true });
+  for (const fileName of ["package.json", "package-lock.json", "server.js"]) {
+    await fs.copyFile(fileName, path.join(targetDir, fileName));
   }
 }
 
-test("self-host deployment installs two loopback-only services", async () => {
-  const [adminService, contentService, environment, deployScript] = await Promise.all([
-    fs.readFile("deploy/self-host/html-workbench.service", "utf8"),
-    fs.readFile("deploy/self-host/html-workbench-content.service", "utf8"),
-    fs.readFile("deploy/self-host/html-workbench.env.example", "utf8"),
-    fs.readFile("deploy/self-host/deploy.sh", "utf8")
-  ]);
+async function createHarness(options = {}) {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "html-workbench-deploy-"));
+  const paths = createDeploymentPaths({ rootDir });
+  const previousRelease = path.join(paths.releasesDir, "previous-release");
+  const logs = [];
+  const commands = [];
+  const serviceState = {
+    active: new Map([[ADMIN_SERVICE, options.adminActive ?? true], [CONTENT_SERVICE, options.contentActive ?? true]]),
+    enabled: new Map([[ADMIN_SERVICE, options.adminEnabled ?? true], [CONTENT_SERVICE, options.contentEnabled ?? true]])
+  };
 
-  for (const service of [adminService, contentService]) {
-    assert.match(service, /^User=htmlworkbench$/m);
-    assert.match(service, /^Group=htmlworkbench$/m);
-    assert.match(service, /^EnvironmentFile=-?\/etc\/html-workbench\.env$/m);
-    assert.match(service, /^Environment=HOST=127\.0\.0\.1$/m);
+  await fs.mkdir(paths.appDir, { recursive: true });
+  await writeFile(path.join(paths.appDir, "legacy-sentinel.txt"), "legacy checkout remains untouched");
+  await writeFile(paths.envFile, options.environmentFile ?? validEnvironmentFile());
+  await writeFile(paths.adminUnit, "old admin unit\n");
+  if (options.contentUnitExists !== false) await writeFile(paths.contentUnit, "old content unit\n");
+  if (options.hostExists !== false) await writeFile(paths.nginxHost, options.hostConfig ?? certbotHostConfig());
+  await writeFile(paths.adminSnippet, "old admin routes\n");
+  await writeFile(paths.contentSnippet, "old content routes\n");
+
+  if (options.previousCurrent !== false) {
+    await fs.mkdir(previousRelease, { recursive: true });
+    await writeFile(path.join(previousRelease, "server.js"), "previous release\n");
+    await createDirectoryLink(previousRelease, paths.currentLink);
   }
-  assert.match(adminService, /^Environment=HTML_WORKBENCH_ROLE=admin$/m);
-  assert.match(adminService, /^Environment=PORT=3000$/m);
-  assert.match(adminService, /^ReadWritePaths=\/var\/lib\/html-workbench$/m);
-  assert.match(contentService, /^Environment=HTML_WORKBENCH_ROLE=content$/m);
-  assert.match(contentService, /^Environment=PORT=3001$/m);
-  assert.match(contentService, /^ProtectSystem=strict$/m);
-  assert.match(contentService, /^ReadOnlyPaths=\/var\/lib\/html-workbench$/m);
-  assert.doesNotMatch(contentService, /^ReadWritePaths=/m);
 
-  assert.match(environment, /^HTML_WORKBENCH_ADMIN_ORIGIN=https:\/\/ho\.wekki\.fun$/m);
-  assert.match(environment, /^HTML_WORKBENCH_PUBLIC_ORIGIN=https:\/\/page\.wekki\.fun$/m);
-  assert.doesNotMatch(environment, /885688/);
-  assert.match(deployScript, /html-workbench-content\.service/);
+  let nginxTestCount = 0;
+  const run = async (command, args = [], runOptions = {}) => {
+    commands.push({ command, args: [...args], cwd: runOptions.cwd });
+    if (command === "git" && args[0] === "checkout") await copyReleaseFixture(runOptions.cwd);
+    if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: `${DEPLOY_SHA}\n`, stderr: "" };
+    if (command === "systemctl" && args[0] === "is-active") {
+      return { code: serviceState.active.get(args.at(-1)) ? 0 : 3, stdout: "", stderr: "" };
+    }
+    if (command === "systemctl" && args[0] === "is-enabled") {
+      return { code: serviceState.enabled.get(args.at(-1)) ? 0 : 1, stdout: "", stderr: "" };
+    }
+    if (command === "systemctl" && args[0] === "show") {
+      const unitPath = args.at(-1) === ADMIN_SERVICE ? paths.adminUnit : paths.contentUnit;
+      return { code: 0, stdout: (await exists(unitPath)) ? "loaded\n" : "not-found\n", stderr: "" };
+    }
+    if (command === "systemctl" && ["stop", "start", "restart"].includes(args[0])) {
+      for (const service of args.slice(1)) serviceState.active.set(service, args[0] !== "stop");
+    }
+    if (command === "systemctl" && ["enable", "disable"].includes(args[0])) {
+      for (const service of args.slice(1)) serviceState.enabled.set(service, args[0] === "enable");
+    }
+    if (command === "systemd-run" && args.some((arg) => arg.endsWith("validate-env.mjs"))) {
+      try {
+        validateEffectiveEnvironment(parseSystemdEnvironmentFile(await fs.readFile(paths.envFile, "utf8")));
+      } catch (error) {
+        return { code: 1, stdout: "", stderr: error.message };
+      }
+    }
+    if (command === "systemd-run" && args.includes("migrate:record-index") && options.migrationFails) {
+      return { code: 1, stdout: "", stderr: "migration failed" };
+    }
+    if (command === "nginx" && args[0] === "-t") {
+      nginxTestCount += 1;
+      if (options.activationFails && nginxTestCount === 1) return { code: 1, stdout: "", stderr: "invalid staged nginx" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  };
+
+  return {
+    cleanup: () => fs.rm(rootDir, { force: true, recursive: true }), commands, logs, paths,
+    previousRelease, run, serviceState
+  };
+}
+
+function commandIndex(commands, predicate) { return commands.findIndex(predicate); }
+
+test("first install stages the exact SHA without mutating the legacy checkout", async () => {
+  const harness = await createHarness({ contentActive: false, contentEnabled: false, contentUnitExists: false, previousCurrent: false });
+  try {
+    await deployRelease({ deploySha: DEPLOY_SHA, log: (message) => harness.logs.push(message), paths: harness.paths, repoUrl: REPO_URL, run: harness.run });
+    assert.equal(await fs.readFile(path.join(harness.paths.appDir, "legacy-sentinel.txt"), "utf8"), "legacy checkout remains untouched");
+    assert.equal(path.resolve(await fs.readlink(harness.paths.currentLink)), path.resolve(harness.paths.releaseDir(DEPLOY_SHA)));
+    assert.ok(await exists(path.join(harness.paths.releaseDir(DEPLOY_SHA), ".html-workbench-release-ready")));
+    assert.ok(await exists(harness.paths.contentUnit), "missing content unit is installed during activation");
+    assert.equal(harness.commands.some(({ command, args }) => command === "git" && args.includes("reset")), false);
+    const fetch = harness.commands.find(({ command, args }) => command === "git" && args[0] === "fetch");
+    assert.deepEqual(fetch.args.slice(-2), ["origin", DEPLOY_SHA]);
+    const npmInstall = harness.commands.find(({ command, args }) => command === "npm" && args[0] === "ci");
+    assert.notEqual(path.resolve(npmInstall.cwd), path.resolve(harness.paths.appDir));
+    assert.match(path.resolve(npmInstall.cwd), new RegExp(path.basename(harness.paths.releasesDir)));
+    const preflightIndex = commandIndex(harness.commands, ({ command, args }) => command === "systemd-run" && args.some((arg) => arg.endsWith("validate-env.mjs")));
+    const stopIndex = commandIndex(harness.commands, ({ command, args }) => command === "systemctl" && args[0] === "stop");
+    const migrationIndex = commandIndex(harness.commands, ({ command, args }) => command === "systemd-run" && args.includes("migrate:record-index"));
+    assert.ok(preflightIndex !== -1 && preflightIndex < stopIndex);
+    assert.ok(stopIndex < migrationIndex);
+    assert.match(harness.commands[preflightIndex].args.join(" "), /EnvironmentFile=.*html-workbench\.env/);
+    const healthIndexes = harness.commands
+      .map((entry, index) => ({ entry, index }))
+      .filter(({ entry }) => entry.command === "curl")
+      .map(({ index }) => index);
+    const nginxTests = harness.commands
+      .map((entry, index) => ({ entry, index }))
+      .filter(({ entry }) => entry.command === "nginx" && entry.args[0] === "-t")
+      .map(({ index }) => index);
+    const reloadIndex = commandIndex(harness.commands, ({ command, args }) => command === "systemctl" && args[0] === "reload" && args[1] === "nginx");
+    assert.equal(healthIndexes.length, 2);
+    assert.equal(nginxTests.length, 2);
+    assert.ok(Math.max(...healthIndexes) < nginxTests.at(-1));
+    assert.ok(nginxTests.at(-1) < reloadIndex);
+    const hostConfig = await fs.readFile(harness.paths.nginxHost, "utf8");
+    assert.match(hostConfig, new RegExp(MANAGED_HOST_MARKER));
+    assert.match(hostConfig, /ssl_certificate \/etc\/letsencrypt\/live\/ho\.wekki\.fun\/fullchain\.pem/);
+    assert.match(hostConfig, /server_name page\.wekki\.fun/);
+    assert.match(hostConfig, /html-workbench-admin-routes\.conf/);
+    assert.match(hostConfig, /html-workbench-content-routes\.conf/);
+  } finally { await harness.cleanup(); }
 });
 
-test("self-host deployment gates both services on the live record-index migration", async () => {
-  const deployScript = await fs.readFile("deploy/self-host/deploy.sh", "utf8");
-
-  assert.match(deployScript, /npm ci --omit=dev/);
-  assert.doesNotMatch(deployScript, /npm install --omit=dev/);
-  assert.match(deployScript, /trap\s+\w+\s+EXIT/);
-  assert.match(deployScript, /systemctl stop html-workbench/);
-  assert.match(deployScript, /systemctl stop html-workbench-content/);
-  assert.match(deployScript, /npm run migrate:record-index/);
-  assert.doesNotMatch(deployScript, /migrate:record-index:recover/);
-  assert.match(deployScript, /systemctl start html-workbench/);
-  assert.match(deployScript, /migration failed/i);
-
-  assertOrdered(deployScript, [
-    /npm ci --omit=dev/,
-    /systemctl stop html-workbench/,
-    /npm run migrate:record-index/,
-    /systemctl daemon-reload/,
-    /systemctl (?:restart|start) html-workbench html-workbench-content/,
-    /http:\/\/127\.0\.0\.1:3000\/healthz/,
-    /http:\/\/127\.0\.0\.1:3001\/healthz/,
-    /nginx -t/,
-    /systemctl reload nginx/
-  ]);
+test("a missing Nginx host bootstraps only the managed admin and page hosts", async () => {
+  const harness = await createHarness({ hostExists: false, previousCurrent: false, contentUnitExists: false, contentActive: false, contentEnabled: false });
+  try {
+    await deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, repoUrl: REPO_URL, run: harness.run });
+    const hostConfig = await fs.readFile(harness.paths.nginxHost, "utf8");
+    assert.match(hostConfig, new RegExp(MANAGED_HOST_MARKER));
+    assert.match(hostConfig, /server_name ho\.wekki\.fun/);
+    assert.match(hostConfig, /server_name page\.wekki\.fun/);
+    assert.doesNotMatch(hostConfig, /oc\.|material\./);
+  } finally { await harness.cleanup(); }
+});
+test("later deploys preserve the Certbot-managed host and update only route snippets", async () => {
+  const managedHost = buildManagedHostConfig(certbotHostConfig());
+  const harness = await createHarness({ hostConfig: managedHost });
+  try {
+    await deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, repoUrl: REPO_URL, run: harness.run });
+    assert.equal(await fs.readFile(harness.paths.nginxHost, "utf8"), managedHost);
+    assert.notEqual(await fs.readFile(harness.paths.adminSnippet, "utf8"), "old admin routes\n");
+    assert.notEqual(await fs.readFile(harness.paths.contentSnippet, "utf8"), "old content routes\n");
+  } finally { await harness.cleanup(); }
 });
 
-test("nginx isolates the admin and public hosts", async () => {
-  const nginx = await fs.readFile("deploy/self-host/nginx.conf", "utf8");
-
-  assert.match(nginx, /server_name ho\.wekki\.fun/);
-  assert.match(nginx, /server_name page\.wekki\.fun/);
-  assert.match(nginx, /client_max_body_size 30m/);
-  assert.match(nginx, /location \^~ \/view\/\s*\{[\s\S]*return 307 https:\/\/page\.wekki\.fun\$request_uri/);
-  assert.match(nginx, /proxy_pass http:\/\/127\.0\.0\.1:3000/);
-  assert.match(nginx, /location \^~ \/api\/\s*\{[\s\S]*?return 404/);
-  assert.match(nginx, /location \^~ \/view\/\s*\{[\s\S]*?proxy_pass http:\/\/127\.0\.0\.1:3001/);
-  assert.match(nginx, /location = \/healthz\s*\{[\s\S]*?proxy_pass http:\/\/127\.0\.0\.1:3001/);
-  assert.match(nginx, /location \/\s*\{\s*return 404/);
-
-  const forwardedHeaderCount = (nginx.match(/proxy_set_header X-Forwarded-For/g) || []).length;
-  assert.ok(forwardedHeaderCount >= 3, "every proxy route must preserve forwarded headers");
+test("migration failure restores the prior release and state but keeps content stopped", async () => {
+  const harness = await createHarness({ migrationFails: true });
+  try {
+    const oldHost = await fs.readFile(harness.paths.nginxHost, "utf8");
+    const oldAdminUnit = await fs.readFile(harness.paths.adminUnit, "utf8");
+    const oldContentUnit = await fs.readFile(harness.paths.contentUnit, "utf8");
+    await assert.rejects(deployRelease({ deploySha: DEPLOY_SHA, log: (message) => harness.logs.push(message), paths: harness.paths, repoUrl: REPO_URL, run: harness.run }), /migration failed/);
+    assert.equal(path.resolve(await fs.readlink(harness.paths.currentLink)), path.resolve(harness.previousRelease));
+    assert.equal(await fs.readFile(harness.paths.adminUnit, "utf8"), oldAdminUnit);
+    assert.equal(await fs.readFile(harness.paths.contentUnit, "utf8"), oldContentUnit);
+    assert.equal(await fs.readFile(harness.paths.nginxHost, "utf8"), oldHost);
+    assert.equal(harness.serviceState.active.get(ADMIN_SERVICE), true);
+    assert.equal(harness.serviceState.active.get(CONTENT_SERVICE), false);
+    assert.equal(harness.serviceState.enabled.get(ADMIN_SERVICE), true);
+    assert.equal(harness.serviceState.enabled.get(CONTENT_SERVICE), true);
+    assert.equal(harness.commands.some(({ args }) => args.includes("migrate:record-index:recover")), false);
+    assert.match(harness.logs.join("\n"), /data state requires operator review/i);
+  } finally { await harness.cleanup(); }
 });
 
-test("README documents the production DNS, migration modes, health, certificates, and rollback", async () => {
-  const readme = await fs.readFile("README.md", "utf8");
+test("migration failure rolls back when the content unit did not previously exist", async () => {
+  const harness = await createHarness({ migrationFails: true, contentUnitExists: false, contentActive: false, contentEnabled: false });
+  try {
+    await assert.rejects(
+      deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, repoUrl: REPO_URL, run: harness.run }),
+      /migration failed/
+    );
+    assert.equal(await exists(harness.paths.contentUnit), false);
+    assert.equal(harness.serviceState.active.get(ADMIN_SERVICE), true);
+    assert.equal(harness.serviceState.active.get(CONTENT_SERVICE), false);
+    assert.equal(harness.serviceState.enabled.get(CONTENT_SERVICE), false);
+  } finally { await harness.cleanup(); }
+});
+test("activation failure restores symlink, units, Nginx files, and prior service state", async () => {
+  const harness = await createHarness({ activationFails: true, adminActive: false, adminEnabled: false, contentActive: true, contentEnabled: false });
+  try {
+    const snapshots = new Map();
+    for (const filePath of [harness.paths.adminUnit, harness.paths.contentUnit, harness.paths.nginxHost, harness.paths.adminSnippet, harness.paths.contentSnippet]) {
+      snapshots.set(filePath, await fs.readFile(filePath, "utf8"));
+    }
+    await assert.rejects(deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, repoUrl: REPO_URL, run: harness.run }), /invalid staged nginx/);
+    assert.equal(path.resolve(await fs.readlink(harness.paths.currentLink)), path.resolve(harness.previousRelease));
+    for (const [filePath, contents] of snapshots) assert.equal(await fs.readFile(filePath, "utf8"), contents);
+    assert.equal(harness.serviceState.active.get(ADMIN_SERVICE), false);
+    assert.equal(harness.serviceState.active.get(CONTENT_SERVICE), true);
+    assert.equal(harness.serviceState.enabled.get(ADMIN_SERVICE), false);
+    assert.equal(harness.serviceState.enabled.get(CONTENT_SERVICE), false);
+    assert.ok(await exists(harness.paths.releaseDir(DEPLOY_SHA)));
+  } finally { await harness.cleanup(); }
+});
 
-  for (const line of [
-    "Host record: page",
-    "Type: A",
-    "Value: 163.7.4.158",
-    "TTL: 600",
-    "HTML_WORKBENCH_ADMIN_ORIGIN",
-    "HTML_WORKBENCH_PUBLIC_ORIGIN",
-    "HTML_WORKBENCH_DOWNLOAD_PASSWORD",
-    "HTML_WORKBENCH_CURSOR_SECRET",
-    "migrate:record-index:dry-run",
-    "migrate:record-index",
-    "migrate:record-index:recover",
-    "systemctl status html-workbench",
-    "systemctl status html-workbench-content",
-    "http://127.0.0.1:3000/healthz",
-    "http://127.0.0.1:3001/healthz",
-    "certbot --nginx -d page.wekki.fun"
-  ]) {
-    assert.match(readme, new RegExp(line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+test("effective environment parsing honors quotes, duplicate last-wins values, and empty credentials", () => {
+  const parsed = parseSystemdEnvironmentFile(`HTML_WORKBENCH_PASSWORD=first
+HTML_WORKBENCH_PASSWORD="last value"
+HTML_WORKBENCH_AUTH_SECRET='quoted auth'
+HTML_WORKBENCH_DOWNLOAD_PASSWORD=""
+HTML_WORKBENCH_CURSOR_SECRET='cursor value'
+HTML_WORKBENCH_DATA_DIR=/var/lib/html-workbench
+HTML_WORKBENCH_ADMIN_ORIGIN=https://ho.wekki.fun
+HTML_WORKBENCH_PUBLIC_ORIGIN=https://page.wekki.fun
+`);
+  assert.equal(parsed.HTML_WORKBENCH_PASSWORD, "last value");
+  assert.equal(parsed.HTML_WORKBENCH_AUTH_SECRET, "quoted auth");
+  assert.equal(parsed.HTML_WORKBENCH_DOWNLOAD_PASSWORD, "");
+  assert.throws(() => validateEffectiveEnvironment(parsed), /HTML_WORKBENCH_DOWNLOAD_PASSWORD/);
+});
+
+test("deployment rejects an effectively empty quoted credential before stopping services", async () => {
+  const harness = await createHarness({
+    environmentFile: validEnvironmentFile().replace('HTML_WORKBENCH_DOWNLOAD_PASSWORD="production download password"', 'HTML_WORKBENCH_DOWNLOAD_PASSWORD=""')
+  });
+  try {
+    await assert.rejects(
+      deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, repoUrl: REPO_URL, run: harness.run }),
+      /HTML_WORKBENCH_DOWNLOAD_PASSWORD/
+    );
+    assert.equal(harness.commands.some(({ command, args }) => command === "systemctl" && args[0] === "stop"), false);
+  } finally { await harness.cleanup(); }
+});
+test("production environment rejects the legacy fallback password even when explicitly present", () => {
+  const parsed = parseSystemdEnvironmentFile(validEnvironmentFile());
+  parsed.HTML_WORKBENCH_PASSWORD = "885688";
+  assert.throws(() => validateEffectiveEnvironment(parsed), /HTML_WORKBENCH_PASSWORD/);
+});
+
+test("systemd units run the atomically activated current release", async () => {
+  const [admin, content] = await Promise.all([fs.readFile("deploy/self-host/html-workbench.service", "utf8"), fs.readFile("deploy/self-host/html-workbench-content.service", "utf8")]);
+  for (const service of [admin, content]) {
+    assert.match(service, /^WorkingDirectory=\/opt\/html-workbench\/current$/m);
+    assert.match(service, /\/opt\/html-workbench\/current\/server\.js/);
+    assert.match(service, /^EnvironmentFile=\/etc\/html-workbench\.env$/m);
   }
-  assert.match(readme, /stop-the-world/i);
-  assert.match(readme, /previous Git commit/i);
+  assert.match(admin, /^Environment=HTML_WORKBENCH_ROLE=admin$/m);
+  assert.match(admin, /^Environment=HOST=127\.0\.0\.1$/m);
+  assert.match(admin, /^Environment=PORT=3000$/m);
+  assert.match(content, /^Environment=HTML_WORKBENCH_ROLE=content$/m);
+  assert.match(content, /^Environment=HOST=127\.0\.0\.1$/m);
+  assert.match(content, /^Environment=PORT=3001$/m);
+  assert.match(content, /^ProtectSystem=strict$/m);
+  assert.match(content, /^ReadOnlyPaths=\/var\/lib\/html-workbench$/m);
+  assert.doesNotMatch(content, /^ReadWritePaths=/m);
 });
 
-test("GitHub deployment delegates to the checked-in migration-gated script", async () => {
+test("workflow pins the triggering SHA and an out-of-band SSH host key", async () => {
   const workflow = await fs.readFile(".github/workflows/deploy-self-host.yml", "utf8");
-
-  assert.match(workflow, /deploy\/self-host\/deploy\.sh/);
-  assert.match(workflow, /APP_DIR/);
-  assert.match(workflow, /BRANCH/);
-  assert.match(workflow, /REPO_URL/);
-  assert.match(workflow, /SERVER_REPO_URL contains unsafe characters/);
-  assert.doesNotMatch(workflow, /npm (?:--prefix "\$APP_DIR" )?install --omit=dev/);
+  assert.match(workflow, /DEPLOY_SHA:.*github\.sha/);
+  assert.match(workflow, /SERVER_HOST_KEY/);
+  assert.match(workflow, /StrictHostKeyChecking=yes/);
+  assert.match(workflow, /UserKnownHostsFile=/);
+  assert.match(workflow, /ssh-keygen -lf/);
+  assert.match(workflow, /scp -P "\$SERVER_PORT"/);
+  assert.doesNotMatch(workflow, /ssh-keyscan/);
+  assert.doesNotMatch(workflow, /git .*reset --hard/);
+  assert.doesNotMatch(workflow, /Skipping self-hosted deployment/);
 });
 
 test("Vercel routes /healthz to the health API", async () => {
   const config = JSON.parse(await fs.readFile("vercel.json", "utf8"));
-  assert.ok(config.rewrites.some((rewrite) => (
-    rewrite.source === "/healthz" && rewrite.destination === "/api/health"
-  )));
+  assert.ok(config.rewrites.some((rewrite) => rewrite.source === "/healthz" && rewrite.destination === "/api/health"));
   await fs.access("api/health.mjs");
 });

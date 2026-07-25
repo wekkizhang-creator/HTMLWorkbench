@@ -14,32 +14,44 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      HAS_DEPLOY_SECRETS: ${{ secrets.SERVER_HOST != '' && secrets.SERVER_USER != '' && secrets.SERVER_SSH_KEY != '' }}
       SERVER_HOST: ${{ secrets.SERVER_HOST }}
       SERVER_PORT: ${{ secrets.SERVER_PORT || '22' }}
       SERVER_USER: ${{ secrets.SERVER_USER }}
+      SERVER_HOST_KEY: ${{ secrets.SERVER_HOST_KEY }}
       APP_DIR: ${{ vars.SERVER_APP_DIR || '/opt/html-workbench' }}
-      BRANCH: ${{ vars.SERVER_BRANCH || 'owncnd_codex/html' }}
       REPO_URL: ${{ vars.SERVER_REPO_URL || 'https://github.com/wekkizhang-creator/HTMLWorkbench.git' }}
+      DEPLOY_SHA: ${{ github.sha }}
 
     steps:
-      - name: Skip when deployment secrets are missing
-        if: ${{ env.HAS_DEPLOY_SECRETS != 'true' }}
+      - name: Require deployment secrets
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
         run: |
-          echo "SERVER_HOST, SERVER_USER, or SERVER_SSH_KEY is not configured."
-          echo "Skipping self-hosted deployment."
+          set -euo pipefail
+          for name in SERVER_HOST SERVER_USER SERVER_SSH_KEY SERVER_HOST_KEY; do
+            [ -n "${!name:-}" ] || { echo "$name is required for deployment" >&2; exit 1; }
+          done
+      - name: Check out the triggering release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
 
-      - name: Validate deployment variables
-        if: ${{ env.HAS_DEPLOY_SECRETS == 'true' }}
+      - name: Validate deployment inputs
         run: |
           set -euo pipefail
           [ "$APP_DIR" = "/opt/html-workbench" ] || { echo "SERVER_APP_DIR must be /opt/html-workbench" >&2; exit 1; }
-          case "$BRANCH" in *[!A-Za-z0-9._/-]*) echo "SERVER_BRANCH contains unsafe characters" >&2; exit 1 ;; esac
+          case "$SERVER_HOST" in *[!A-Za-z0-9.:-]*|'') echo "SERVER_HOST contains unsafe characters" >&2; exit 1 ;; esac
+          case "$SERVER_USER" in *[!A-Za-z0-9._-]*|'') echo "SERVER_USER contains unsafe characters" >&2; exit 1 ;; esac
+          case "$SERVER_PORT" in *[!0-9]*|'') echo "SERVER_PORT must be numeric" >&2; exit 1 ;; esac
+          [ "$SERVER_PORT" -ge 1 ] && [ "$SERVER_PORT" -le 65535 ] || { echo "SERVER_PORT is out of range" >&2; exit 1; }
+          case "$DEPLOY_SHA" in *[!0-9a-fA-F]*|'') echo "DEPLOY_SHA must be hexadecimal" >&2; exit 1 ;; esac
+          [ "${#DEPLOY_SHA}" -eq 40 ] || { echo "DEPLOY_SHA must contain 40 characters" >&2; exit 1; }
           case "$REPO_URL" in *[!A-Za-z0-9._~:/@%+=,-]*) echo "SERVER_REPO_URL contains unsafe characters" >&2; exit 1 ;; esac
           case "$REPO_URL" in https://github.com/*) ;; *) echo "SERVER_REPO_URL must be an HTTPS GitHub URL" >&2; exit 1 ;; esac
+          [ "$(git rev-parse HEAD)" = "$DEPLOY_SHA" ] || { echo "Checkout does not match DEPLOY_SHA" >&2; exit 1; }
 
-      - name: Configure SSH
-        if: ${{ env.HAS_DEPLOY_SECRETS == 'true' }}
+      - name: Configure pinned SSH trust
         env:
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
         run: |
@@ -47,33 +59,40 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/htmlworkbench_deploy_key
           chmod 600 ~/.ssh/htmlworkbench_deploy_key
-          ssh-keyscan -p "$SERVER_PORT" -H "$SERVER_HOST" >> ~/.ssh/known_hosts
+          printf '%s\n' "$SERVER_HOST_KEY" > ~/.ssh/htmlworkbench_known_hosts
+          chmod 600 ~/.ssh/htmlworkbench_known_hosts
+          expected_host="$SERVER_HOST"
+          if [ "$SERVER_PORT" != "22" ]; then expected_host="[$SERVER_HOST]:$SERVER_PORT"; fi
+          awk -v expected="$expected_host" 'NF >= 3 && $1 == expected { found=1 } END { exit(found ? 0 : 1) }' ~/.ssh/htmlworkbench_known_hosts || {
+            echo "SERVER_HOST_KEY must contain an out-of-band known_hosts entry for $expected_host" >&2
+            exit 1
+          }
+          ssh-keygen -lf ~/.ssh/htmlworkbench_known_hosts >/dev/null
 
-      - name: Deploy on server
-        if: ${{ env.HAS_DEPLOY_SECRETS == 'true' }}
+      - name: Package immutable deployment entrypoint
+        run: tar -czf "html-workbench-deploy-${DEPLOY_SHA}.tar.gz" deploy/self-host
+
+      - name: Deploy exact release on server
         run: |
           set -euo pipefail
-          ssh \
-            -i ~/.ssh/htmlworkbench_deploy_key \
-            -p "$SERVER_PORT" \
-            -o IdentitiesOnly=yes \
-            "$SERVER_USER@$SERVER_HOST" \
-            "APP_DIR='$APP_DIR' BRANCH='$BRANCH' REPO_URL='$REPO_URL' bash -s" <<'REMOTE'
+          archive="html-workbench-deploy-${DEPLOY_SHA}.tar.gz"
+          remote_archive="/tmp/${archive}"
+          ssh_options=(
+            -i "$HOME/.ssh/htmlworkbench_deploy_key"
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$HOME/.ssh/htmlworkbench_known_hosts"
+          )
+          scp -P "$SERVER_PORT" "${ssh_options[@]}" "$archive" "$SERVER_USER@$SERVER_HOST:$remote_archive"
+          ssh -p "$SERVER_PORT" "${ssh_options[@]}" "$SERVER_USER@$SERVER_HOST" \
+            "DEPLOY_SHA='$DEPLOY_SHA' APP_DIR='$APP_DIR' REPO_URL='$REPO_URL' DEPLOY_ARCHIVE='$remote_archive' bash -s" <<'REMOTE'
           set -euo pipefail
-
-          SUDO=""
-          if [ "$(id -u)" -ne 0 ]; then
-            SUDO="sudo -n"
-          fi
-
-          if [ -d "$APP_DIR/.git" ]; then
-            $SUDO git -C "$APP_DIR" fetch origin "$BRANCH"
-            $SUDO git -C "$APP_DIR" checkout "$BRANCH"
-            $SUDO git -C "$APP_DIR" reset --hard "origin/$BRANCH"
-          else
-            $SUDO git clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
-          fi
-
-          $SUDO env APP_DIR="$APP_DIR" BRANCH="$BRANCH" REPO_URL="$REPO_URL" \
-            bash "$APP_DIR/deploy/self-host/deploy.sh"
+          case "$DEPLOY_SHA" in *[!0-9a-fA-F]*|'') exit 1 ;; esac
+          [ "${#DEPLOY_SHA}" -eq 40 ] || exit 1
+          work_dir="$(mktemp -d "/tmp/html-workbench-deploy-${DEPLOY_SHA}.XXXXXX")"
+          trap 'rm -rf -- "$work_dir" "$DEPLOY_ARCHIVE"' EXIT
+          tar -xzf "$DEPLOY_ARCHIVE" -C "$work_dir"
+          chmod 755 "$work_dir/deploy/self-host/deploy.sh"
+          env APP_DIR="$APP_DIR" REPO_URL="$REPO_URL" DEPLOY_SHA="$DEPLOY_SHA" \
+            bash "$work_dir/deploy/self-host/deploy.sh"
           REMOTE

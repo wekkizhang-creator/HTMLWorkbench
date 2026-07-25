@@ -6,13 +6,13 @@ After=network.target
 Type=simple
 User=htmlworkbench
 Group=htmlworkbench
-WorkingDirectory=/opt/html-workbench
+WorkingDirectory=/opt/html-workbench/current
 Environment=NODE_ENV=production
 Environment=HTML_WORKBENCH_ROLE=admin
 Environment=HOST=127.0.0.1
 Environment=PORT=3000
 EnvironmentFile=/etc/html-workbench.env
-ExecStart=/usr/bin/env HTML_WORKBENCH_ROLE=admin HOST=127.0.0.1 PORT=3000 /usr/bin/node /opt/html-workbench/server.js
+ExecStart=/usr/bin/env NODE_ENV=production HTML_WORKBENCH_ROLE=admin HOST=127.0.0.1 PORT=3000 /usr/bin/node /opt/html-workbench/current/server.js
 Restart=always
 RestartSec=5
 UMask=0027

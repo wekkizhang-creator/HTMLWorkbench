@@ -1,11 +1,45 @@
 services:
-  admin:
+  html-workbench-init:
     build: .
+    image: html-workbench:local
+    container_name: html-workbench-init
+    user: root
+    command: ["chown", "-R", "node:node", "/data"]
+    restart: "no"
+    volumes:
+      - html-workbench-data:/data
+
+  migration:
+    image: html-workbench:local
+    container_name: html-workbench-migration
+    restart: "no"
+    depends_on:
+      html-workbench-init:
+        condition: service_completed_successfully
+    command: ["npm", "run", "migrate:record-index"]
+    environment:
+      NODE_ENV: production
+      HTML_WORKBENCH_ROLE: admin
+      HTML_WORKBENCH_DATA_DIR: /data
+      HTML_WORKBENCH_ADMIN_ORIGIN: https://ho.wekki.fun
+      HTML_WORKBENCH_PUBLIC_ORIGIN: https://page.wekki.fun
+      HTML_WORKBENCH_PASSWORD: "${HTML_WORKBENCH_PASSWORD:?HTML_WORKBENCH_PASSWORD is required}"
+      HTML_WORKBENCH_AUTH_SECRET: "${HTML_WORKBENCH_AUTH_SECRET:?HTML_WORKBENCH_AUTH_SECRET is required}"
+      HTML_WORKBENCH_DOWNLOAD_PASSWORD: "${HTML_WORKBENCH_DOWNLOAD_PASSWORD:?HTML_WORKBENCH_DOWNLOAD_PASSWORD is required}"
+      HTML_WORKBENCH_CURSOR_SECRET: "${HTML_WORKBENCH_CURSOR_SECRET:?HTML_WORKBENCH_CURSOR_SECRET is required}"
+    volumes:
+      - html-workbench-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  admin:
     image: html-workbench:local
     container_name: html-workbench
     restart: unless-stopped
     depends_on:
-      html-workbench-init:
+      migration:
         condition: service_completed_successfully
     environment:
       NODE_ENV: production
@@ -40,7 +74,7 @@ services:
     container_name: html-workbench-content
     restart: unless-stopped
     depends_on:
-      html-workbench-init:
+      migration:
         condition: service_completed_successfully
     environment:
       NODE_ENV: production
@@ -68,15 +102,6 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
-
-  html-workbench-init:
-    image: html-workbench:local
-    container_name: html-workbench-init
-    user: root
-    command: ["chown", "-R", "node:node", "/data"]
-    restart: "no"
-    volumes:
-      - html-workbench-data:/data
 
 volumes:
   html-workbench-data:

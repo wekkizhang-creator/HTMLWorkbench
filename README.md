@@ -27,31 +27,22 @@ npm run dev
 npm run check
 ```
 
-## 自有服务器部署
+## Self-hosted deployment
 
-生产布局固定为：
+Production uses two Node processes from the same immutable release:
 
-- 应用：`/opt/html-workbench`
-- 数据：`/var/lib/html-workbench`
-- 用户/组：`htmlworkbench:htmlworkbench`
-- 管理服务：`html-workbench`，`127.0.0.1:3000`，读写数据
-- 内容服务：`html-workbench-content`，`127.0.0.1:3001`，只读数据
-- 公共配置文件：`/etc/html-workbench.env`
-- Nginx 配置：`/etc/nginx/conf.d/ho.wekki.fun.conf`
-
-首次配置前先准备 checkout：
-
-```bash
-sudo mkdir -p /opt/html-workbench /var/lib/html-workbench
-id htmlworkbench >/dev/null 2>&1 || sudo useradd --system --home /opt/html-workbench --shell /usr/sbin/nologin htmlworkbench
-sudo git clone --branch owncnd_codex/html https://github.com/wekkizhang-creator/HTMLWorkbench.git /opt/html-workbench
-```
-
-不要修改 `/etc/nginx/conf.d/` 中与 `ho.wekki.fun` 无关的 `oc`、`material` 或其他站点配置。
+- Application root: `/opt/html-workbench`
+- Immutable releases: `/opt/html-workbench/releases/<full-git-sha>`
+- Active release symlink: `/opt/html-workbench/current`
+- Legacy checkout: existing files directly under `/opt/html-workbench` are left untouched
+- Shared data: `/var/lib/html-workbench`, owned by `htmlworkbench:htmlworkbench`
+- Admin: `html-workbench.service`, `127.0.0.1:3000`, read/write
+- Content: `html-workbench-content.service`, `127.0.0.1:3001`, read-only
+- Environment file: `/etc/html-workbench.env`
 
 ### DNS
 
-为公共内容域名配置：
+Create this exact DNS record before requesting the public certificate:
 
 ```text
 Host record: page
@@ -60,183 +51,166 @@ Value: 163.7.4.158
 TTL: 600
 ```
 
-发布前确认 `page.wekki.fun` 已解析到 `163.7.4.158`。
+`page.wekki.fun` must resolve to `163.7.4.158`.
 
-### 自托管环境变量
+### Environment
 
-首次部署先准备只允许 root 和服务组读取的环境文件：
-
-```bash
-sudo cp /opt/html-workbench/deploy/self-host/html-workbench.env.example /etc/html-workbench.env
-sudo chown root:htmlworkbench /etc/html-workbench.env
-sudo chmod 640 /etc/html-workbench.env
-sudoedit /etc/html-workbench.env
-```
-
-必须配置：
+Create `/etc/html-workbench.env` with mode `0640`, owner `root`, and group `htmlworkbench`:
 
 ```text
 HTML_WORKBENCH_DATA_DIR=/var/lib/html-workbench
 HTML_WORKBENCH_ADMIN_ORIGIN=https://ho.wekki.fun
 HTML_WORKBENCH_PUBLIC_ORIGIN=https://page.wekki.fun
 HTML_WORKBENCH_PASSWORD=<admin password>
-HTML_WORKBENCH_AUTH_SECRET=<random secret>
+HTML_WORKBENCH_AUTH_SECRET=<random authentication secret>
 HTML_WORKBENCH_DOWNLOAD_PASSWORD=<separate download password>
-HTML_WORKBENCH_CURSOR_SECRET=<random cursor signing secret>
+HTML_WORKBENCH_CURSOR_SECRET=<random cursor-signing secret>
 ```
 
-不要把真实密码或 secret 提交到 Git。`HOST`、`PORT` 和 `HTML_WORKBENCH_ROLE` 由各自的 systemd unit 固定，不应放入共享环境文件；unit 的启动命令也会覆盖旧版环境文件中遗留的 `PORT=3000`。
+Do not commit real credentials. All four credentials are required and must be non-empty; `885688` is rejected for production. The deploy preflight uses `systemd-run` with `EnvironmentFile=/etc/html-workbench.env`, so systemd quote handling and duplicate-key last-wins behavior are validated before either service is stopped.
 
-### Nginx 和证书
+### Managed Nginx configuration
 
-现有 `ho.wekki.fun` 配置必须先备份。下面只替换该站点文件，不会触碰无关 host：
+Deployment owns only these files:
+
+```text
+/etc/nginx/conf.d/ho.wekki.fun.conf
+/etc/nginx/snippets/html-workbench-admin-routes.conf
+/etc/nginx/snippets/html-workbench-content-routes.conf
+```
+
+It never reads or writes unrelated `oc`, `material`, or other host files. If the host file is missing, deployment creates a marked HTTP bootstrap host for `ho.wekki.fun` and `page.wekki.fun`. If an unmarked `ho.wekki.fun` host already exists, deployment adopts its relevant server blocks once, preserving Certbot TLS directives while replacing only HTMLWorkbench locations with stable snippet includes. After the marker is present, later deploys leave the host file byte-for-byte unchanged and update only the two snippets. Candidate files are installed atomically, checked with `nginx -t`, and restored if validation or later activation fails.
+
+Admin requests proxy to port 3000 with a 30 MB body limit. Legacy `/view` and `/view/...` requests receive a 307 redirect to the same request URI on `https://page.wekki.fun`. The page host proxies only `/view/` and `/healthz` to port 3001; `/api/`, management static files, login paths, and every other route return 404. Both proxies preserve `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`.
+
+After DNS and the first HTTP bootstrap deploy, request the public certificate with Certbot 2.9.0:
 
 ```bash
-sudo cp /etc/nginx/conf.d/ho.wekki.fun.conf /etc/nginx/conf.d/ho.wekki.fun.conf.pre-dual-service
-sudo cp /opt/html-workbench/deploy/self-host/nginx.conf /etc/nginx/conf.d/ho.wekki.fun.conf
-sudo nginx -t
-sudo systemctl reload nginx
-sudo certbot --nginx -d ho.wekki.fun
 sudo certbot --nginx -d page.wekki.fun
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-`ho.wekki.fun` 将管理请求代理到 3000，并以 307 把原始 `/view` request URI 重定向到 `page.wekki.fun`。公共 host 只代理 `/view/` 和 `/healthz`；API、登录、管理静态文件和其他路径都返回 404。
+Certbot's edits remain in the stable marked host file and are preserved by future deployments.
 
-### 首次安装和更新
+### Immutable live deployment
 
-服务器需要 Node.js 20+、Git、Nginx、systemd、curl 和 Certbot 2.9.0 或兼容版本。
-
-按上一节准备 checkout、配置 `/etc/html-workbench.env` 和 Nginx 后：
+`DEPLOY_SHA` must be the full 40-character commit to release. The script fetches that exact object into a new staged directory, verifies `HEAD`, runs `npm ci --omit=dev` there, and completes environment/config preflight while the old processes continue using the previous release. It never runs `git reset --hard` and never modifies the legacy live checkout or its dependencies.
 
 ```bash
-sudo bash /opt/html-workbench/deploy/self-host/deploy.sh
+cd /path/to/a/trusted-checkout-at-the-release
+DEPLOY_SHA=$(git rev-parse HEAD)
+sudo env DEPLOY_SHA="$DEPLOY_SHA" \
+  REPO_URL=https://github.com/wekkizhang-creator/HTMLWorkbench.git \
+  APP_DIR=/opt/html-workbench \
+  bash deploy/self-host/deploy.sh
 ```
 
-更新同样运行 `deploy.sh`。脚本使用 `npm ci --omit=dev`，预检环境变量，停止两个服务，运行 live record-index migration，成功后才 daemon-reload 并重启两个服务。任何失败都会保持内容服务停止；如果管理服务原来在运行，trap 会尝试恢复管理服务。脚本永远不会自动执行显式 lock recovery。
+After preparation, deployment records the prior service state, stops both roles, runs the live record-index migration from the staged release, activates `/opt/html-workbench/current`, installs the units and managed Nginx files, validates Nginx, starts both services, verifies both loopback health endpoints, and reloads Nginx.
 
-### Migration gate
+### Migration gate and recovery
 
-从 pre-release 版本进行第一次升级时，旧管理进程不认识 writer leases。首次 dry-run、live migration 或 recovery 都必须执行 **stop-the-world**：先停止 admin 和 content，绝不能在旧 admin 仍接受写入时运行 migration。
+The first upgrade from the pre-lease version is strictly **stop-the-world**. The old admin does not use writer leases, so admin and content must both be stopped before every dry-run, live migration, or explicit recovery. Never run these commands while an old admin can accept writes.
 
-Dry-run：
+Prepare a separate exact-SHA tree for the first dry-run while the old service remains untouched, validate its effective environment, and only then stop the world:
 
 ```bash
+TARGET_SHA=<full-40-character-target-sha>
+DRY_RUN_RELEASE="/opt/html-workbench/releases/.dry-run-$TARGET_SHA"
+sudo install -d -m 0755 "$DRY_RUN_RELEASE"
+sudo git -C "$DRY_RUN_RELEASE" init
+sudo git -C "$DRY_RUN_RELEASE" remote add origin https://github.com/wekkizhang-creator/HTMLWorkbench.git
+sudo git -C "$DRY_RUN_RELEASE" fetch --depth=1 origin "$TARGET_SHA"
+sudo git -C "$DRY_RUN_RELEASE" checkout --detach FETCH_HEAD
+test "$(sudo git -C "$DRY_RUN_RELEASE" rev-parse HEAD)" = "$TARGET_SHA"
+sudo npm --prefix "$DRY_RUN_RELEASE" ci --omit=dev
+sudo systemd-run --wait --collect --pipe \
+  --property=User=htmlworkbench \
+  --property=Group=htmlworkbench \
+  --property=EnvironmentFile=/etc/html-workbench.env \
+  /usr/bin/node "$DRY_RUN_RELEASE/deploy/self-host/validate-env.mjs"
 sudo systemctl stop html-workbench
 sudo systemctl stop html-workbench-content 2>/dev/null || true
 sudo systemd-run --wait --collect --pipe \
   --property=User=htmlworkbench \
   --property=Group=htmlworkbench \
-  --property=WorkingDirectory=/opt/html-workbench \
+  --property=WorkingDirectory="$DRY_RUN_RELEASE" \
   --property=EnvironmentFile=/etc/html-workbench.env \
   /usr/bin/npm run migrate:record-index:dry-run
 sudo systemctl start html-workbench
 ```
 
-Live migration 使用部署脚本，它实现完整的 stop-the-world gate 和失败 trap：
+Live migration is performed only by `deploy.sh`. If migration fails, deployment restores the previous release, units, managed Nginx files, and previous admin state, but keeps content stopped. It never labels the failed release recovered and never runs lock recovery automatically. The failed release remains under `/opt/html-workbench/releases/<failed-deploy-sha>` for diagnosis.
+
+Explicit recovery is an operator-only action after confirming no migration process is active. Run the recovery implementation from the retained failed release, because the restored pre-release code may not contain it:
 
 ```bash
-sudo bash /opt/html-workbench/deploy/self-host/deploy.sh
-```
-
-Explicit recovery 只能由操作员确认没有 migration 正在运行后手工执行。不要在脚本或定时任务中自动调用：
-
-```bash
+FAILED_SHA=<full-40-character-failed-deploy-sha>
+RECOVERY_RELEASE="/opt/html-workbench/releases/$FAILED_SHA"
 sudo systemctl stop html-workbench
 sudo systemctl stop html-workbench-content 2>/dev/null || true
 systemctl list-units 'html-workbench-record-index-migration-*'
+sudo test -f "$RECOVERY_RELEASE/.html-workbench-release-ready"
 sudo systemd-run --wait --collect --pipe \
   --property=User=htmlworkbench \
   --property=Group=htmlworkbench \
-  --property=WorkingDirectory=/opt/html-workbench \
+  --property=WorkingDirectory="$RECOVERY_RELEASE" \
   --property=EnvironmentFile=/etc/html-workbench.env \
   /usr/bin/npm run migrate:record-index:recover
-# Recovery 后必须重新运行 live migration；成功前不要启动 content。
-sudo bash /opt/html-workbench/deploy/self-host/deploy.sh
+# Re-run the normal live deployment; do not start content before migration succeeds.
 ```
+Code and configuration rollback cannot reverse records already changed by a successful or partially completed migration. Take a data snapshot before the first cross-version migration. After any failed migration or post-migration activation rollback, inspect migration logs and the data/index state before retrying or restoring a data snapshot.
 
-### 状态和健康检查
+### Status and health
 
 ```bash
-sudo systemctl status html-workbench
-sudo systemctl status html-workbench-content
+sudo systemctl status html-workbench html-workbench-content --no-pager
+readlink -f /opt/html-workbench/current
 curl -fsS -H 'Host: ho.wekki.fun' http://127.0.0.1:3000/healthz
 curl -fsS -H 'Host: page.wekki.fun' http://127.0.0.1:3001/healthz
 sudo nginx -t
 ```
 
-### 方式二：Docker Compose
+### Docker Compose
 
-Compose 使用同一镜像和 named volume；admin 读写挂载，content 以 `:ro` 挂载并使用只读容器文件系统。先创建未跟踪的 `.env`：
+Create an untracked `.env` containing all four credentials listed above. Compose retains the root-owned one-shot volume initializer, then runs a read/write `migration` service. Both admin and content depend on `migration: service_completed_successfully`, so neither can start when migration exits unsuccessfully. Admin publishes only `127.0.0.1:3000`; content publishes only `127.0.0.1:3001` and mounts `/data` read-only.
 
-```bash
-cd /opt/html-workbench
-umask 077
-read -rsp 'Admin password: ' HTML_WORKBENCH_PASSWORD; echo
-read -rsp 'Download password: ' HTML_WORKBENCH_DOWNLOAD_PASSWORD; echo
-HTML_WORKBENCH_AUTH_SECRET=$(openssl rand -hex 32)
-HTML_WORKBENCH_CURSOR_SECRET=$(openssl rand -hex 32)
-printf '%s\n' \
-  "HTML_WORKBENCH_PASSWORD=$HTML_WORKBENCH_PASSWORD" \
-  "HTML_WORKBENCH_AUTH_SECRET=$HTML_WORKBENCH_AUTH_SECRET" \
-  "HTML_WORKBENCH_DOWNLOAD_PASSWORD=$HTML_WORKBENCH_DOWNLOAD_PASSWORD" \
-  "HTML_WORKBENCH_CURSOR_SECRET=$HTML_WORKBENCH_CURSOR_SECRET" > .env
-docker compose build
-docker compose run --rm --no-deps admin npm run migrate:record-index
-docker compose up -d
-```
-
-Admin 和 content 分别只发布到 `127.0.0.1:3000`、`127.0.0.1:3001`。跨版本升级也必须 stop-the-world：
+For a cross-version update, preserve the same stop-the-world boundary:
 
 ```bash
 docker compose stop admin content
 docker compose build
-docker compose run --rm --no-deps admin npm run migrate:record-index
-docker compose up -d admin content
+docker compose up -d
 ```
 
-不要用只读 content service 运行 migration。显式 recovery 与 systemd 相同，只能在确认没有 migration 后，使用 `docker compose run --rm --no-deps admin npm run migrate:record-index:recover` 手工执行，随后再运行 live migration。
+Do not run a separate live migration command: `docker compose up` runs the one-shot gate. Explicit lock recovery remains manual and must be followed by another normal migration gate:
+
+```bash
+docker compose stop admin content
+docker compose run --rm --no-deps migration npm run migrate:record-index:recover
+docker compose up -d
+```
 
 ### Rollback
 
-部署前记录 previous Git commit，并保留 Nginx 备份和数据快照。如果代码或服务配置需要回滚：
+Automatic rollback keeps every release directory and repoints `/opt/html-workbench/current` to the prior target. A previous Git commit remains at `/opt/html-workbench/releases/<previous-sha>`; record it as `PREVIOUS_SHA=<previous Git commit SHA>` and repoint `current` to that release for a manual rollback. For a later manual code rollback, stop both roles, repoint the symlink to a known release, reinstall that release's units and managed snippets, run `systemctl daemon-reload` and `nginx -t`, then start only services known to be compatible with the current data. Keep content stopped when migration readiness is uncertain. Restore `/var/lib/html-workbench` only from a deliberate pre-deploy snapshot when data rollback is required.
 
-```bash
-cd /opt/html-workbench
-PREVIOUS_COMMIT=<previous Git commit SHA>
-sudo systemctl stop html-workbench
-sudo systemctl stop html-workbench-content 2>/dev/null || true
-sudo git checkout --detach "$PREVIOUS_COMMIT"
-sudo npm ci --omit=dev
-sudo cp deploy/self-host/html-workbench.service /etc/systemd/system/html-workbench.service
-sudo systemctl disable html-workbench-content
-sudo cp /etc/nginx/conf.d/ho.wekki.fun.conf.pre-dual-service /etc/nginx/conf.d/ho.wekki.fun.conf
-sudo systemctl daemon-reload
-sudo systemctl restart html-workbench
-sudo nginx -t
-sudo systemctl reload nginx
-```
+### GitHub Actions SSH trust
 
-旧版 admin 不支持 leases；回滚后保持 content 停止，并在再次升级前重新执行 stop-the-world migration。只有在 schema/data 也必须回退时才从部署前快照恢复 `/var/lib/html-workbench`。
-
-### GitHub Actions 自动部署
-
-`.github/workflows/deploy-self-host.yml` 在推送 `owncnd_codex/html` 时通过 SSH bootstrap checkout，然后调用仓库中的同一个 `deploy/self-host/deploy.sh`。需要 Repository secrets：
+The workflow deploys `${{ github.sha }}` and requires these repository secrets:
 
 ```text
 SERVER_HOST=163.7.4.158
 SERVER_USER=root
 SERVER_PORT=22
-SERVER_SSH_KEY=<private key>
+SERVER_SSH_KEY=<private deployment key>
+SERVER_HOST_KEY=163.7.4.158 ssh-ed25519 <server public host key>
 ```
 
-可选 Repository variables：
+Obtain the host public key through a trusted server console or hosting control plane, not through the deployment SSH connection. For example, read `/etc/ssh/ssh_host_ed25519_key.pub` locally on the server, construct the `known_hosts` line above, and compare its fingerprint out of band with:
 
-```text
-SERVER_APP_DIR=/opt/html-workbench
-SERVER_BRANCH=owncnd_codex/html
-SERVER_REPO_URL=https://github.com/wekkizhang-creator/HTMLWorkbench.git
+```bash
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 ```
 
-`SERVER_APP_DIR` 必须保持 `/opt/html-workbench`。非 root 部署用户必须能通过免密 sudo 执行部署脚本所需的 systemctl、systemd-run、文件安装和 Git 操作。
+For a non-default port, the secret's host field must be `[163.7.4.158]:<port>`. The workflow validates the known-hosts line with `ssh-keygen`, uses `StrictHostKeyChecking=yes`, and never calls `ssh-keyscan`. Optional `SERVER_APP_DIR` must remain `/opt/html-workbench`; `SERVER_REPO_URL` may override the HTTPS GitHub repository URL.
