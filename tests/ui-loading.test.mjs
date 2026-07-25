@@ -121,6 +121,21 @@ function jsonResponse(status, payload) {
   };
 }
 
+function recordsResponse(records, { nextCursor = null, hasMore = false } = {}) {
+  return jsonResponse(200, {
+    records,
+    page: { nextCursor, hasMore }
+  });
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function sampleRecord(overrides = {}) {
   return {
     description: "一份可检索的示例说明",
@@ -224,9 +239,11 @@ async function createAppHarness(initialResponses = []) {
     }
   };
   const context = {
+    AbortController,
     FormData,
     Intl,
     URL,
+    URLSearchParams,
     document,
     fetch,
     navigator: {},
@@ -256,12 +273,12 @@ async function createAppHarness(initialResponses = []) {
   };
 }
 
-test("startup loads seeded records with one uploads request and no auth preflight", async () => {
+test("startup asks the server for the first 50 records with no auth preflight", async () => {
   const record = sampleRecord();
-  const harness = await createAppHarness([jsonResponse(200, { records: [record] })]);
+  const harness = await createAppHarness([recordsResponse([record])]);
 
   await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
-  assert.deepEqual(harness.requests.map(({ url }) => url), ["/api/uploads"]);
+  assert.deepEqual(harness.requests.map(({ url }) => url), ["/api/uploads?limit=50"]);
   assert.equal(harness.elements.recordBody.children.length, 1);
   assert.match(harness.elements.recordBody.children[0].innerHTML, /已加载的记录/);
   assert.match(harness.elements.recordBody.children[0].innerHTML, /一份可检索的示例说明/);
@@ -269,7 +286,7 @@ test("startup loads seeded records with one uploads request and no auth prefligh
 
 test("failed refresh preserves rendered records and actionable backend text", async () => {
   const harness = await createAppHarness([
-    jsonResponse(200, { records: [sampleRecord()] }),
+    recordsResponse([sampleRecord()]),
     jsonResponse(503, { error: "存储服务暂不可用" })
   ]);
   await waitFor(() => harness.elements.recordBody.children.length === 1);
@@ -281,7 +298,7 @@ test("failed refresh preserves rendered records and actionable backend text", as
   assert.equal(harness.elements.toast.textContent, "存储服务暂不可用");
 });
 
-test("first-load network failure shows localized retry state and retry recovers", async () => {
+test("first-load network failure shows retry state and retry recovers", async () => {
   const harness = await createAppHarness([new TypeError("Failed to fetch")]);
   await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
 
@@ -289,7 +306,7 @@ test("first-load network failure shows localized retry state and retry recovers"
   assert.equal(harness.elements.recordsLoading.hidden, true);
   assert.equal(harness.elements.recordsErrorMessage.textContent, "网络连接失败，请检查网络后重试");
 
-  harness.enqueue(jsonResponse(200, { records: [sampleRecord({ title: "重试成功" })] }));
+  harness.enqueue(recordsResponse([sampleRecord({ title: "重试成功" })]));
   await harness.elements.retryButton.dispatch("click");
   await waitFor(() => harness.elements.recordBody.children.length === 1);
 
@@ -304,7 +321,7 @@ test("401 during startup redirects to login without an auth preflight", async ()
   await waitFor(() => harness.location.href.startsWith("/login.html"));
 
   assert.equal(harness.location.href, "/login.html?next=%2F");
-  assert.deepEqual(harness.requests.map(({ url }) => url), ["/api/uploads"]);
+  assert.deepEqual(harness.requests.map(({ url }) => url), ["/api/uploads?limit=50"]);
 });
 
 test("first-load errors are announced and indefinite motion respects user preferences", async () => {
@@ -316,87 +333,117 @@ test("first-load errors are announced and indefinite motion respects user prefer
   assert.match(css, /animation:\s*none/);
 });
 
-test("records render in batches of 50 and load more reports the remaining count", async () => {
+test("load more sends the current cursor and appends records deduplicated by id", async () => {
+  const first = sampleRecord({ id: "first-record", title: "First page" });
+  const duplicate = sampleRecord({ id: "first-record", title: "Duplicate from second page" });
+  const second = sampleRecord({ id: "second-record", title: "Second page" });
   const harness = await createAppHarness([
-    jsonResponse(200, { records: sampleRecords(125) })
+    recordsResponse([first], { nextCursor: "opaque-next-cursor", hasMore: true }),
+    recordsResponse([duplicate, second], { nextCursor: "second-opaque-cursor", hasMore: true }),
+    recordsResponse([sampleRecord({ id: "third-record", title: "Third page" })])
   ]);
   await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
 
-  assert.equal(harness.elements.recordBody.children.length, 50);
+  assert.equal(harness.elements.recordBody.children.length, 1);
   assert.equal(harness.elements.loadMoreButton.hidden, false);
-  assert.equal(harness.elements.loadMoreButton.textContent, "\u52a0\u8f7d\u66f4\u591a\uff08\u5269\u4f59 75 \u6761\uff09");
 
   await harness.elements.loadMoreButton.dispatch("click");
-  assert.equal(harness.elements.recordBody.children.length, 100);
-  assert.equal(harness.elements.loadMoreButton.textContent, "\u52a0\u8f7d\u66f4\u591a\uff08\u5269\u4f59 25 \u6761\uff09");
+  await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
+
+  assert.deepEqual(harness.requests.map(({ url }) => url), [
+    "/api/uploads?limit=50",
+    "/api/uploads?limit=50&cursor=opaque-next-cursor"
+  ]);
+  assert.equal(harness.elements.recordBody.children.length, 2);
+  assert.equal(harness.elements.recordBody.children[0].dataset.id, "first-record");
+  assert.match(harness.elements.recordBody.children[0].innerHTML, /Duplicate from second page/);
+  assert.match(harness.elements.recordBody.children[1].innerHTML, /Second page/);
+  assert.equal(harness.elements.loadMoreButton.disabled, false);
 
   await harness.elements.loadMoreButton.dispatch("click");
-  assert.equal(harness.elements.recordBody.children.length, 125);
+  await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
+
+  assert.equal(harness.requests[2].url, "/api/uploads?limit=50&cursor=second-opaque-cursor");
+  assert.equal(harness.elements.recordBody.children.length, 3);
   assert.equal(harness.elements.loadMoreButton.hidden, true);
 });
 
-test("search waits 200ms and searches records outside the first rendered batch", async () => {
+test("search waits 200ms, sends q to the server, and resets to page one", async () => {
   const harness = await createAppHarness([
-    jsonResponse(200, {
-      records: sampleRecords(75, (index) => ({
-        title: index === 70 ? "Deep target record" : `Ordinary record ${index}`
-      }))
-    })
+    recordsResponse([sampleRecord({ title: "Earlier page" })], {
+      nextCursor: "obsolete-cursor",
+      hasMore: true
+    }),
+    recordsResponse([sampleRecord({ title: "Deep target record" })])
   ]);
   await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
 
   harness.elements.searchInput.value = "Deep target";
   await harness.elements.searchInput.dispatch("input");
-  assert.equal(harness.elements.recordBody.children.length, 50);
+  assert.equal(harness.elements.recordBody.children.length, 1);
 
   harness.advanceTimersBy(199);
-  assert.equal(harness.elements.recordBody.children.length, 50);
+  assert.equal(harness.requests.length, 1);
 
   harness.advanceTimersBy(1);
-  assert.equal(harness.elements.recordBody.children.length, 1);
-  assert.match(harness.elements.recordBody.children[0].innerHTML, /Deep target record/);
+  await waitFor(() => harness.elements.recordBody.children.length === 1
+    && /Deep target record/.test(harness.elements.recordBody.children[0].innerHTML));
+
+  assert.deepEqual(harness.requests.map(({ url }) => url), [
+    "/api/uploads?limit=50",
+    "/api/uploads?limit=50&q=Deep+target"
+  ]);
   assert.equal(harness.elements.loadMoreButton.hidden, true);
 });
 
-test("search and type changes reset the visible record limit", async () => {
+test("type filters are sent to the server and refresh restarts at page one", async () => {
   const harness = await createAppHarness([
-    jsonResponse(200, { records: sampleRecords(120, () => ({ documentType: "Analysis" })) })
+    recordsResponse([sampleRecord({ documentType: "Analysis", title: "All types" })], {
+      nextCursor: "first-cursor",
+      hasMore: true
+    }),
+    recordsResponse([sampleRecord({ documentType: "Analysis", title: "Filtered" })]),
+    recordsResponse([sampleRecord({ documentType: "Analysis", title: "Refreshed" })])
   ]);
   await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
 
-  await harness.elements.loadMoreButton.dispatch("click");
-  assert.equal(harness.elements.recordBody.children.length, 100);
-
-  harness.elements.searchInput.value = "Record";
-  await harness.elements.searchInput.dispatch("input");
-  harness.advanceTimersBy(200);
-  assert.equal(harness.elements.recordBody.children.length, 50);
-
-  await harness.elements.loadMoreButton.dispatch("click");
-  assert.equal(harness.elements.recordBody.children.length, 100);
-
   harness.elements.typeFilter.value = "Analysis";
   await harness.elements.typeFilter.dispatch("change");
-  assert.equal(harness.elements.recordBody.children.length, 50);
+  await waitFor(() => harness.requests.length === 2);
+
+  await harness.elements.refreshButton.dispatch("click");
+
+  assert.deepEqual(harness.requests.map(({ url }) => url), [
+    "/api/uploads?limit=50",
+    "/api/uploads?limit=50&documentType=Analysis",
+    "/api/uploads?limit=50&documentType=Analysis"
+  ]);
+  assert.match(harness.elements.recordBody.children[0].innerHTML, /Refreshed/);
 });
 
-test("record type options are not rebuilt by search, filter, or load more", async () => {
+test("a late response from an abandoned search cannot replace a newer query", async () => {
+  const delayedSearch = deferred();
   const harness = await createAppHarness([
-    jsonResponse(200, { records: sampleRecords(75) })
+    recordsResponse([sampleRecord({ title: "Initial" })]),
+    delayedSearch.promise,
+    recordsResponse([sampleRecord({ title: "New query" })])
   ]);
   await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
-  const uploadOptionsWrites = harness.elements.documentTypeSelect.innerHTMLSetCount;
-  const filterOptionsWrites = harness.elements.typeFilter.innerHTMLSetCount;
 
-  await harness.elements.loadMoreButton.dispatch("click");
-  harness.elements.searchInput.value = "Record";
+  harness.elements.searchInput.value = "Old query";
   await harness.elements.searchInput.dispatch("input");
   harness.advanceTimersBy(200);
-  harness.elements.typeFilter.value = "Analysis";
-  await harness.elements.typeFilter.dispatch("change");
+  await waitFor(() => harness.requests.length === 2);
 
-  assert.equal(harness.elements.documentTypeSelect.innerHTMLSetCount, uploadOptionsWrites);
-  assert.equal(harness.elements.typeFilter.innerHTMLSetCount, filterOptionsWrites);
+  harness.elements.searchInput.value = "New query";
+  await harness.elements.searchInput.dispatch("input");
+  harness.advanceTimersBy(200);
+  await waitFor(() => /New query/.test(harness.elements.recordBody.children[0].innerHTML));
+
+  delayedSearch.resolve(recordsResponse([sampleRecord({ title: "Old query" })]));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.match(harness.elements.recordBody.children[0].innerHTML, /New query/);
 });
 
 test("records view includes a hidden load-more control", async () => {

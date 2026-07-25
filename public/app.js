@@ -7,7 +7,10 @@ const state = {
   hasLoadedRecords: false,
   recordsLoading: false,
   uploadLoading: false,
-  visibleRecordCount: 50
+  nextCursor: null,
+  hasMore: false,
+  activeQueryKey: "",
+  requestController: null
 };
 
 const MAX_UPLOAD_BYTES = 30 * 1024 * 1024;
@@ -102,6 +105,7 @@ function getDocumentTypes() {
   const types = [];
   for (const type of [
     ...BASE_DOCUMENT_TYPES,
+    state.activeDocumentType,
     ...state.records.map((record) => record.documentType)
   ]) {
     const normalized = normalizeDocumentType(type);
@@ -174,6 +178,10 @@ function setRecordsLoading(isLoading) {
   elements.recordsPanel.setAttribute("aria-busy", String(isLoading));
   elements.refreshButton.disabled = isLoading;
   elements.refreshButton.classList.toggle("is-loading", isLoading);
+  elements.loadMoreButton.disabled = isLoading || !state.hasMore;
+  if (state.hasMore) {
+    elements.loadMoreButton.textContent = isLoading ? "加载中" : "加载更多";
+  }
   elements.recordsLoading.hidden = !(isLoading && !state.hasLoadedRecords);
   if (isLoading) {
     elements.recordsError.hidden = true;
@@ -237,48 +245,37 @@ function renderStats() {
   elements.originText.textContent = window.location.origin;
 }
 
-function getFilteredRecords() {
-  const query = state.searchQuery.trim().toLowerCase();
-  return state.records.filter((record) => {
-    const documentType = normalizeDocumentType(record.documentType);
-    const matchesDocumentType = !state.activeDocumentType || documentType === state.activeDocumentType;
-    if (!matchesDocumentType) {
-      return false;
-    }
-    if (!query) {
-      return true;
-    }
-    const searchable = [
-      record.title,
-      record.description,
-      documentType,
-      record.originalName
-    ].join(" ").toLowerCase();
-    return searchable.includes(query);
-  });
+function getRecordQueryKey() {
+  return JSON.stringify([
+    state.searchQuery.trim(),
+    state.activeDocumentType
+  ]);
 }
 
-function resetVisibleRecordCount() {
-  state.visibleRecordCount = RECORDS_PAGE_SIZE;
+function resetPagination() {
+  state.requestController?.abort();
+  state.nextCursor = null;
+  state.hasMore = false;
+  state.activeQueryKey = getRecordQueryKey();
 }
 
-function setRecordCollection(records, { resetVisible = false } = {}) {
+function deduplicateById(records) {
+  return [...new Map(records.map((record) => [record.id, record])).values()];
+}
+
+function setRecordCollection(records) {
   state.records = records;
-  if (resetVisible) {
-    resetVisibleRecordCount();
-  }
   renderDocumentTypeOptions();
 }
 
 function renderRecords() {
-  const filteredRecords = getFilteredRecords();
-  const visibleRecords = filteredRecords.slice(0, state.visibleRecordCount);
-  const remainingCount = filteredRecords.length - visibleRecords.length;
+  const visibleRecords = state.records;
   elements.recordBody.innerHTML = "";
-  elements.emptyState.classList.toggle("visible", filteredRecords.length === 0);
-  elements.loadMoreButton.hidden = remainingCount === 0;
-  elements.loadMoreButton.textContent = `\u52a0\u8f7d\u66f4\u591a\uff08\u5269\u4f59 ${remainingCount} \u6761\uff09`;
-  elements.emptyText.textContent = state.records.length === 0 ? "暂无记录" : "没有匹配的文件";
+  elements.emptyState.classList.toggle("visible", visibleRecords.length === 0);
+  elements.loadMoreButton.hidden = !state.hasMore;
+  elements.loadMoreButton.disabled = state.recordsLoading || !state.hasMore;
+  elements.loadMoreButton.textContent = state.recordsLoading ? "加载中" : "加载更多";
+  elements.emptyText.textContent = "暂无记录";
 
   for (const record of visibleRecords) {
     const link = absoluteUrl(record.url);
@@ -352,19 +349,61 @@ async function api(path, options = {}) {
   return payload;
 }
 
-async function loadRecords() {
+async function loadRecords({ append = false } = {}) {
+  const queryKey = getRecordQueryKey();
+  if (append && (state.recordsLoading || !state.hasMore || !state.nextCursor || state.activeQueryKey !== queryKey)) {
+    return false;
+  }
+
+  if (!append) {
+    resetPagination();
+  }
+
+  const cursor = append ? state.nextCursor : null;
+  const requestController = new AbortController();
+  state.requestController = requestController;
+  state.activeQueryKey = queryKey;
+
+  const params = new URLSearchParams();
+  params.set("limit", String(RECORDS_PAGE_SIZE));
+  if (cursor) {
+    params.set("cursor", cursor);
+  }
+  if (state.searchQuery.trim()) {
+    params.set("q", state.searchQuery.trim());
+  }
+  if (state.activeDocumentType) {
+    params.set("documentType", state.activeDocumentType);
+  }
+
   setRecordsLoading(true);
   try {
-    const payload = await api("/api/uploads");
-    setRecordCollection(payload.records || [], { resetVisible: true });
+    const payload = await api(`/api/uploads?${params.toString()}`, {
+      signal: requestController.signal
+    });
+    if (state.requestController !== requestController || state.activeQueryKey !== queryKey) {
+      return false;
+    }
+
+    const records = append
+      ? deduplicateById([...state.records, ...(payload.records || [])])
+      : (payload.records || []);
+    setRecordCollection(records);
+    state.nextCursor = payload.page?.nextCursor || null;
+    state.hasMore = Boolean(payload.page?.hasMore && state.nextCursor);
     renderRecords();
     state.hasLoadedRecords = true;
     return true;
   } catch (error) {
+    if (state.requestController !== requestController || state.activeQueryKey !== queryKey) {
+      return false;
+    }
     showRecordsLoadError(error.message);
     return false;
   } finally {
-    setRecordsLoading(false);
+    if (state.requestController === requestController) {
+      setRecordsLoading(false);
+    }
   }
 }
 
@@ -597,20 +636,17 @@ elements.searchInput.addEventListener("input", () => {
   window.clearTimeout(searchDebounceTimer);
   searchDebounceTimer = window.setTimeout(() => {
     state.searchQuery = elements.searchInput.value;
-    resetVisibleRecordCount();
-    renderRecords();
+    void loadRecords();
   }, SEARCH_DEBOUNCE_MS);
 });
 
-elements.typeFilter.addEventListener("change", () => {
+elements.typeFilter.addEventListener("change", async () => {
   state.activeDocumentType = elements.typeFilter.value;
-  resetVisibleRecordCount();
-  renderRecords();
+  await loadRecords();
 });
 
-elements.loadMoreButton.addEventListener("click", () => {
-  state.visibleRecordCount += RECORDS_PAGE_SIZE;
-  renderRecords();
+elements.loadMoreButton.addEventListener("click", async () => {
+  await loadRecords({ append: true });
 });
 
 elements.recordBody.addEventListener("click", async (event) => {
