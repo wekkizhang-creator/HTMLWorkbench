@@ -284,18 +284,30 @@ test("startup asks the server for the first 50 records with no auth preflight", 
   assert.match(harness.elements.recordBody.children[0].innerHTML, /一份可检索的示例说明/);
 });
 
-test("failed refresh preserves rendered records and actionable backend text", async () => {
+test("failed refresh preserves rendered rows and the prior continuation cursor", async () => {
+  const initialRecord = sampleRecord({ id: "initial-record", title: "Initial page" });
+  const nextRecord = sampleRecord({ id: "next-record", title: "Next page" });
   const harness = await createAppHarness([
-    recordsResponse([sampleRecord()]),
-    jsonResponse(503, { error: "存储服务暂不可用" })
+    recordsResponse([initialRecord], { nextCursor: "prior-continuation-cursor", hasMore: true }),
+    jsonResponse(503, { error: "存储服务暂不可用" }),
+    recordsResponse([nextRecord])
   ]);
   await waitFor(() => harness.elements.recordBody.children.length === 1);
 
   await harness.elements.refreshButton.dispatch("click");
 
   assert.equal(harness.elements.recordBody.children.length, 1);
-  assert.match(harness.elements.recordBody.children[0].innerHTML, /已加载的记录/);
+  assert.match(harness.elements.recordBody.children[0].innerHTML, /Initial page/);
   assert.equal(harness.elements.toast.textContent, "存储服务暂不可用");
+  assert.equal(harness.elements.loadMoreButton.hidden, false);
+  assert.equal(harness.elements.loadMoreButton.disabled, false);
+
+  await harness.elements.loadMoreButton.dispatch("click");
+  await waitFor(() => harness.requests.length === 3);
+
+  assert.equal(harness.requests[2].url, "/api/uploads?limit=50&cursor=prior-continuation-cursor");
+  assert.equal(harness.elements.recordBody.children.length, 2);
+  assert.match(harness.elements.recordBody.children[1].innerHTML, /Next page/);
 });
 
 test("first-load network failure shows retry state and retry recovers", async () => {

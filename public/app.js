@@ -10,7 +10,8 @@ const state = {
   nextCursor: null,
   hasMore: false,
   activeQueryKey: "",
-  requestController: null
+  requestController: null,
+  pendingReplacementPagination: null
 };
 
 const MAX_UPLOAD_BYTES = 30 * 1024 * 1024;
@@ -252,11 +253,26 @@ function getRecordQueryKey() {
   ]);
 }
 
-function resetPagination() {
+function snapshotPaginationForReplacement(queryKey) {
+  if (state.pendingReplacementPagination?.queryKey === queryKey) {
+    return state.pendingReplacementPagination;
+  }
+  if (state.activeQueryKey === queryKey && state.hasMore && state.nextCursor) {
+    return {
+      queryKey,
+      nextCursor: state.nextCursor,
+      hasMore: state.hasMore
+    };
+  }
+  return null;
+}
+
+function resetPagination(queryKey, replacementPagination) {
   state.requestController?.abort();
   state.nextCursor = null;
   state.hasMore = false;
-  state.activeQueryKey = getRecordQueryKey();
+  state.activeQueryKey = queryKey;
+  state.pendingReplacementPagination = replacementPagination;
 }
 
 function deduplicateById(records) {
@@ -351,12 +367,13 @@ async function api(path, options = {}) {
 
 async function loadRecords({ append = false } = {}) {
   const queryKey = getRecordQueryKey();
+  const replacementPagination = append ? null : snapshotPaginationForReplacement(queryKey);
   if (append && (state.recordsLoading || !state.hasMore || !state.nextCursor || state.activeQueryKey !== queryKey)) {
     return false;
   }
 
   if (!append) {
-    resetPagination();
+    resetPagination(queryKey, replacementPagination);
   }
 
   const cursor = append ? state.nextCursor : null;
@@ -391,12 +408,19 @@ async function loadRecords({ append = false } = {}) {
     setRecordCollection(records);
     state.nextCursor = payload.page?.nextCursor || null;
     state.hasMore = Boolean(payload.page?.hasMore && state.nextCursor);
+    state.pendingReplacementPagination = null;
     renderRecords();
     state.hasLoadedRecords = true;
     return true;
   } catch (error) {
     if (state.requestController !== requestController || state.activeQueryKey !== queryKey) {
       return false;
+    }
+    if (!append && replacementPagination?.queryKey === queryKey) {
+      state.nextCursor = replacementPagination.nextCursor;
+      state.hasMore = replacementPagination.hasMore;
+      state.pendingReplacementPagination = null;
+      renderRecords();
     }
     showRecordsLoadError(error.message);
     return false;
