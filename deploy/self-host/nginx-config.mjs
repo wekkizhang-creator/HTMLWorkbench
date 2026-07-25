@@ -9,7 +9,7 @@ const PROXY_HEADERS = `        proxy_http_version 1.1;
         proxy_set_header X-Forwarded-Proto $scheme;`;
 
 export const ADMIN_ROUTES = `# Managed by HTMLWorkbench deploy; local edits are overwritten.
-client_max_body_size 30m;
+client_max_body_size 32m;
 
 location = /view {
     return 307 https://page.wekki.fun$request_uri;

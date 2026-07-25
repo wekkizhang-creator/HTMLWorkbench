@@ -526,3 +526,13 @@ test("Vercel routes /healthz to the health API", async () => {
   assert.ok(config.rewrites.some((rewrite) => rewrite.source === "/healthz" && rewrite.destination === "/api/health"));
   await fs.access("api/health.mjs");
 });
+
+
+test("Nginx leaves multipart overhead above the 30 MiB file limit", async () => {
+  const [snippet, generator] = await Promise.all([
+    fs.readFile(new URL("../deploy/self-host/nginx-admin-routes.conf", import.meta.url), "utf8"),
+    fs.readFile(new URL("../deploy/self-host/nginx-config.mjs", import.meta.url), "utf8")
+  ]);
+  assert.match(snippet, /client_max_body_size\s+32m;/);
+  assert.match(generator, /client_max_body_size 32m;/);
+});

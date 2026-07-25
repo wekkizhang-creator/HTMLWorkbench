@@ -745,3 +745,26 @@ test("animation completion clears the record motion fallback timer", async () =>
   await harness.elements.recordBody.children[1].dispatch("animationend");
   assert.equal(harness.pendingTimerCount(), 0);
 });
+
+
+test("a list response started before a successful upload cannot overwrite the new record", async () => {
+  const delayedRefresh = deferred();
+  const harness = await createAppHarness([
+    recordsResponse([sampleRecord({ id: "initial", title: "Initial" })]),
+    delayedRefresh.promise
+  ]);
+  await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
+
+  const refreshCompletion = harness.elements.refreshButton.dispatch("click");
+  await waitFor(() => harness.requests.length === 3);
+  const { completion, xhr } = await startUpload(harness);
+  xhr.respond(201, { record: sampleRecord({ id: "published-after-refresh", title: "Published after refresh" }) });
+  await completion;
+  assert.match(harness.elements.recordBody.children[0].innerHTML, /Published after refresh/);
+
+  delayedRefresh.resolve(recordsResponse([sampleRecord({ id: "stale", title: "Stale refresh" })]));
+  await refreshCompletion;
+  assert.match(harness.elements.recordBody.children[0].innerHTML, /Published after refresh/);
+  assert.doesNotMatch(harness.elements.recordBody.children[0].innerHTML, /Stale refresh/);
+  assert.equal(harness.elements.loadMoreButton.hidden, true);
+});

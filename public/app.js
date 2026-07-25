@@ -12,6 +12,7 @@ const state = {
   hasMore: false,
   activeQueryKey: "",
   requestController: null,
+  mutationEpoch: 0,
   pendingReplacementPagination: null,
   csrfToken: ""
 };
@@ -332,6 +333,14 @@ function resetPagination(queryKey, replacementPagination) {
   state.pendingReplacementPagination = replacementPagination;
 }
 
+function invalidateRecordRequestsAfterMutation() {
+  state.mutationEpoch += 1;
+  state.requestController?.abort();
+  state.nextCursor = null;
+  state.hasMore = false;
+  state.pendingReplacementPagination = null;
+}
+
 function deduplicateById(records) {
   return [...new Map(records.map((record) => [record.id, record])).values()];
 }
@@ -508,6 +517,7 @@ async function loadRecords({ append = false } = {}) {
   }
 
   const cursor = append ? state.nextCursor : null;
+  const mutationEpoch = state.mutationEpoch;
   const requestController = new AbortController();
   state.requestController = requestController;
   state.activeQueryKey = queryKey;
@@ -529,7 +539,11 @@ async function loadRecords({ append = false } = {}) {
     const payload = await api(`/api/uploads?${params.toString()}`, {
       signal: requestController.signal
     });
-    if (state.requestController !== requestController || state.activeQueryKey !== queryKey) {
+    if (
+      state.requestController !== requestController
+      || state.activeQueryKey !== queryKey
+      || state.mutationEpoch !== mutationEpoch
+    ) {
       return false;
     }
 
@@ -549,7 +563,11 @@ async function loadRecords({ append = false } = {}) {
     state.hasLoadedRecords = true;
     return true;
   } catch (error) {
-    if (state.requestController !== requestController || state.activeQueryKey !== queryKey) {
+    if (
+      state.requestController !== requestController
+      || state.activeQueryKey !== queryKey
+      || state.mutationEpoch !== mutationEpoch
+    ) {
       return false;
     }
     if (!append && replacementPagination?.queryKey === queryKey) {
@@ -587,6 +605,7 @@ async function uploadSelectedFile() {
       }
       setUploadPhase("uploading", progress);
     });
+    invalidateRecordRequestsAfterMutation();
     setRecordCollection([payload.record, ...state.records]);
     elements.titleInput.value = "";
     setSelectedFile(null);
@@ -628,6 +647,7 @@ async function deleteRecord(id) {
   }
 
   await api(`/api/uploads/${id}`, { method: "DELETE" });
+  invalidateRecordRequestsAfterMutation();
   setRecordCollection(state.records.filter((item) => item.id !== id));
   renderRecords();
   showToast("记录已删除");
@@ -725,6 +745,7 @@ async function replaceRecord(id, button) {
       }
       setUploadPhase("uploading", progress);
     }, "PUT");
+    invalidateRecordRequestsAfterMutation();
     setRecordCollection([payload.record, ...state.records.filter((item) => item.id !== id)]);
     renderRecords({ successRecordId: payload.record.id });
     setLatestRecord(payload.record);
@@ -759,6 +780,7 @@ async function rollbackRecord(id, button) {
     const payload = await api(`/api/uploads/${id}`, {
       method: "PATCH"
     });
+    invalidateRecordRequestsAfterMutation();
     setRecordCollection([payload.record, ...state.records.filter((item) => item.id !== id)]);
     renderRecords();
     setLatestRecord(payload.record);
