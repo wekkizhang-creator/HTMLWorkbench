@@ -24,6 +24,7 @@ export function createDeploymentPaths({ rootDir = "/", appDir = "/opt/html-workb
     currentLink: path.join(mappedAppDir, "current"),
     dataDir: rooted(rootDir, "/var/lib/html-workbench"),
     envFile: rooted(rootDir, "/etc/html-workbench.env"),
+    contentEnvFile: rooted(rootDir, "/etc/html-workbench-content.env"),
     adminUnit: rooted(rootDir, "/etc/systemd/system/html-workbench.service"),
     contentUnit: rooted(rootDir, "/etc/systemd/system/html-workbench-content.service"),
     nginxHost: rooted(rootDir, "/etc/nginx/conf.d/ho.wekki.fun.conf"),
@@ -231,6 +232,12 @@ async function ensureHostPrerequisites({ paths, releaseDir, run }) {
   }
   await checked(run, "chown", ["root:htmlworkbench", paths.envFile]);
   await checked(run, "chmod", ["640", paths.envFile]);
+  await replaceFile(
+    paths.contentEnvFile,
+    await fs.readFile(path.join(releaseDir, "deploy/self-host/html-workbench-content.env.example")),
+    0o640
+  );
+  await checked(run, "chown", ["root:htmlworkbench", paths.contentEnvFile]);
 }
 
 async function validateEnvironment({ paths, releaseDir, run }) {
@@ -241,6 +248,15 @@ async function validateEnvironment({ paths, releaseDir, run }) {
     "--property=Group=htmlworkbench",
     `--property=EnvironmentFile=${paths.envFile}`,
     "/usr/bin/node", path.join(releaseDir, "deploy/self-host/validate-env.mjs")
+  ]);
+  await checked(run, "systemd-run", [
+    "--quiet", "--wait", "--collect", "--pipe",
+    `--unit=html-workbench-content-env-preflight-${Date.now()}-${process.pid}`,
+    "--property=User=htmlworkbench",
+    "--property=Group=htmlworkbench",
+    `--property=EnvironmentFile=${paths.contentEnvFile}`,
+    "/usr/bin/node", path.join(releaseDir, "deploy/self-host/validate-env.mjs"),
+    "--profile", "content-host"
   ]);
 }
 

@@ -20,6 +20,13 @@ const REQUIRED_SECRETS = Object.freeze([
   "HTML_WORKBENCH_CURSOR_SECRET"
 ]);
 
+const PROFILE_CONFIG = Object.freeze({
+  host: Object.freeze({ values: REQUIRED_VALUES.host, requireSecrets: true, forbidSecrets: false }),
+  container: Object.freeze({ values: REQUIRED_VALUES.container, requireSecrets: true, forbidSecrets: false }),
+  "content-host": Object.freeze({ values: REQUIRED_VALUES.host, requireSecrets: false, forbidSecrets: true }),
+  "content-container": Object.freeze({ values: REQUIRED_VALUES.container, requireSecrets: false, forbidSecrets: true })
+});
+
 function parseValue(raw, lineNumber) {
   let value = "";
   let index = 0;
@@ -88,25 +95,41 @@ export function parseSystemdEnvironmentFile(contents) {
 }
 
 export function validateEffectiveEnvironment(environment = process.env, { profile = "host" } = {}) {
-  const requiredValues = REQUIRED_VALUES[profile];
-  if (!requiredValues) throw new Error(`Unknown production environment profile: ${profile}`);
-  for (const [name, expected] of Object.entries(requiredValues)) {
+  const profileConfig = PROFILE_CONFIG[profile];
+  if (!profileConfig) throw new Error(`Unknown production environment profile: ${profile}`);
+  for (const [name, expected] of Object.entries(profileConfig.values)) {
     if (environment[name] !== expected) {
       throw new Error(`${name} must be exactly ${expected}`);
     }
   }
-  for (const name of REQUIRED_SECRETS) {
-    const value = environment[name];
-    if (typeof value !== "string" || value.trim() === "" || /^change-this-/i.test(value)) {
-      throw new Error(`${name} must be a non-empty production credential`);
+  if (profileConfig.requireSecrets) {
+    for (const name of REQUIRED_SECRETS) {
+      const value = environment[name];
+      if (typeof value !== "string" || value.trim() === "" || /^change-this-/i.test(value)) {
+        throw new Error(`${name} must be a non-empty production credential`);
+      }
+    }
+  }
+  if (profileConfig.forbidSecrets) {
+    for (const name of REQUIRED_SECRETS) {
+      if (environment[name] !== undefined) {
+        throw new Error(`Content profile must not receive ${name}`);
+      }
     }
   }
   return true;
 }
 
+function requestedProfile(args) {
+  const profileIndex = args.indexOf("--profile");
+  if (profileIndex === -1) return "host";
+  if (!args[profileIndex + 1]) throw new Error("--profile requires a value");
+  return args[profileIndex + 1];
+}
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   try {
-    validateEffectiveEnvironment(process.env);
+    validateEffectiveEnvironment(process.env, { profile: requestedProfile(process.argv.slice(2)) });
     process.stdout.write("Effective HTMLWorkbench environment is valid.\n");
   } catch (error) {
     process.stderr.write(`${error.message}\n`);

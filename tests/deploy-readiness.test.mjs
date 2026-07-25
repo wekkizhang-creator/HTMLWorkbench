@@ -128,7 +128,13 @@ async function createHarness(options = {}) {
     }
     if (command === "systemd-run" && args.some((arg) => arg.endsWith("validate-env.mjs"))) {
       try {
-        validateEffectiveEnvironment(parseSystemdEnvironmentFile(await fs.readFile(paths.envFile, "utf8")));
+        const environmentArgument = args.find((arg) => arg.startsWith("--property=EnvironmentFile="));
+        const environmentFile = environmentArgument.slice("--property=EnvironmentFile=".length);
+        const profileIndex = args.indexOf("--profile");
+        validateEffectiveEnvironment(
+          parseSystemdEnvironmentFile(await fs.readFile(environmentFile, "utf8")),
+          { profile: profileIndex === -1 ? "host" : args[profileIndex + 1] }
+        );
       } catch (error) {
         return { code: 1, stdout: "", stderr: error.message };
       }
@@ -178,9 +184,15 @@ test("first install stages the exact SHA without mutating the legacy checkout", 
     assert.notEqual(path.resolve(npmInstall.cwd), path.resolve(harness.paths.appDir));
     assert.match(path.resolve(npmInstall.cwd), new RegExp(path.basename(harness.paths.releasesDir)));
     const preflightIndex = commandIndex(harness.commands, ({ command, args }) => command === "systemd-run" && args.some((arg) => arg.endsWith("validate-env.mjs")));
+    const preflights = harness.commands
+      .map((entry, index) => ({ entry, index }))
+      .filter(({ entry }) => entry.command === "systemd-run" && entry.args.some((arg) => arg.endsWith("validate-env.mjs")));
     const stopIndex = commandIndex(harness.commands, ({ command, args }) => command === "systemctl" && args[0] === "stop");
     const migrationIndex = commandIndex(harness.commands, ({ command, args }) => command === "systemd-run" && args.includes("migrate:record-index"));
     assert.ok(preflightIndex !== -1 && preflightIndex < stopIndex);
+    assert.equal(preflights.length, 2);
+    assert.ok(preflights.every(({ index }) => index < stopIndex));
+    assert.match(preflights[1].entry.args.join(" "), /html-workbench-content\.env.*--profile content-host/);
     assert.ok(stopIndex < migrationIndex);
     assert.match(harness.commands[preflightIndex].args.join(" "), /EnvironmentFile=.*html-workbench\.env/);
     const healthIndexes = harness.commands
@@ -202,6 +214,8 @@ test("first install stages the exact SHA without mutating the legacy checkout", 
     assert.match(hostConfig, /server_name page\.wekki\.fun/);
     assert.match(hostConfig, /html-workbench-admin-routes\.conf/);
     assert.match(hostConfig, /html-workbench-content-routes\.conf/);
+    const contentEnvironment = await fs.readFile(harness.paths.contentEnvFile, "utf8");
+    assert.doesNotMatch(contentEnvironment, /PASSWORD|AUTH_SECRET|DOWNLOAD_PASSWORD|CURSOR_SECRET/);
   } finally { await harness.cleanup(); }
 });
 
@@ -337,6 +351,22 @@ test("production environment rejects missing credentials instead of silently fal
   assert.throws(() => validateEffectiveEnvironment(parsed), /HTML_WORKBENCH_PASSWORD/);
 });
 
+test("content validation profile is non-secret and rejects leaked management credentials", () => {
+  const contentEnvironment = {
+    HTML_WORKBENCH_DATA_DIR: "/var/lib/html-workbench",
+    HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",
+    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun"
+  };
+  assert.equal(validateEffectiveEnvironment(contentEnvironment, { profile: "content-host" }), true);
+  assert.throws(
+    () => validateEffectiveEnvironment({
+      ...contentEnvironment,
+      HTML_WORKBENCH_AUTH_SECRET: "leaked"
+    }, { profile: "content-host" }),
+    /must not receive HTML_WORKBENCH_AUTH_SECRET/
+  );
+});
+
 for (const [name, option] of [
   ["LoadState", "systemctlShowFails"],
   ["active state", "systemctlIsActiveFails"],
@@ -360,12 +390,17 @@ test("systemd units run the atomically activated current release", async () => {
   for (const service of [admin, content]) {
     assert.match(service, /^WorkingDirectory=\/opt\/html-workbench\/current$/m);
     assert.match(service, /\/opt\/html-workbench\/current\/server\.js/);
-    assert.match(service, /^EnvironmentFile=\/etc\/html-workbench\.env$/m);
-    assert.match(
-      service,
-      /^ExecStartPre=\/usr\/bin\/node \/opt\/html-workbench\/current\/deploy\/self-host\/validate-env\.mjs$/m
-    );
   }
+  assert.match(admin, /^EnvironmentFile=\/etc\/html-workbench\.env$/m);
+  assert.match(
+    admin,
+    /^ExecStartPre=\/usr\/bin\/node \/opt\/html-workbench\/current\/deploy\/self-host\/validate-env\.mjs$/m
+  );
+  assert.match(content, /^EnvironmentFile=\/etc\/html-workbench-content\.env$/m);
+  assert.match(
+    content,
+    /^ExecStartPre=\/usr\/bin\/node \/opt\/html-workbench\/current\/deploy\/self-host\/validate-env\.mjs --profile content-host$/m
+  );
   assert.match(admin, /^Environment=HTML_WORKBENCH_ROLE=admin$/m);
   assert.match(admin, /^Environment=HOST=127\.0\.0\.1$/m);
   assert.match(admin, /^Environment=PORT=3000$/m);
@@ -375,6 +410,18 @@ test("systemd units run the atomically activated current release", async () => {
   assert.match(content, /^ProtectSystem=strict$/m);
   assert.match(content, /^ReadOnlyPaths=\/var\/lib\/html-workbench$/m);
   assert.doesNotMatch(content, /^ReadWritePaths=/m);
+  assert.doesNotMatch(content, /HTML_WORKBENCH_(?:PASSWORD|AUTH_SECRET|DOWNLOAD_PASSWORD|CURSOR_SECRET)/);
+});
+
+test("self-hosted content environment template contains no management credentials", async () => {
+  const template = await fs.readFile("deploy/self-host/html-workbench-content.env.example", "utf8");
+  for (const name of [
+    "HTML_WORKBENCH_PASSWORD",
+    "HTML_WORKBENCH_AUTH_SECRET",
+    "HTML_WORKBENCH_DOWNLOAD_PASSWORD",
+    "HTML_WORKBENCH_CURSOR_SECRET"
+  ]) assert.doesNotMatch(template, new RegExp(name));
+  assert.match(template, /HTML_WORKBENCH_DATA_DIR=\/var\/lib\/html-workbench/);
 });
 
 test("workflow pins the triggering SHA and an out-of-band SSH host key", async () => {

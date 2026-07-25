@@ -1,4 +1,4 @@
-import { verifyDownloadPassword } from "../lib/auth.mjs";
+import { isAdminHostRequest, verifyDownloadPassword } from "../lib/auth.mjs";
 import { error } from "../lib/http.mjs";
 import { assertRecordId, getSafeFileName } from "../lib/records.mjs";
 import { getRuntimeConfig } from "../lib/runtime.mjs";
@@ -10,6 +10,9 @@ export function isTrustedAdminOrigin(request) {
 
 export async function POST(request) {
   try {
+    if (!isAdminHostRequest(request)) {
+      return error("Page does not exist", 404);
+    }
     if (!isTrustedAdminOrigin(request)) {
       return error("Download requests must come from the admin origin", 403);
     }

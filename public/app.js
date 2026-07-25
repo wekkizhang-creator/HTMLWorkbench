@@ -12,7 +12,8 @@ const state = {
   hasMore: false,
   activeQueryKey: "",
   requestController: null,
-  pendingReplacementPagination: null
+  pendingReplacementPagination: null,
+  csrfToken: ""
 };
 
 const MAX_UPLOAD_BYTES = 30 * 1024 * 1024;
@@ -422,10 +423,19 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function isWriteMethod(method = "GET") {
+  return !["GET", "HEAD", "OPTIONS"].includes(String(method).toUpperCase());
+}
+
 async function api(path, options = {}) {
   let response;
   try {
-    response = await fetch(path, options);
+    const requestOptions = { ...options, headers: new Headers(options.headers || {}) };
+    if (isWriteMethod(requestOptions.method)) {
+      if (!state.csrfToken) throw new Error("Security token is unavailable; please sign in again");
+      requestOptions.headers.set("X-CSRF-Token", state.csrfToken);
+    }
+    response = await fetch(path, requestOptions);
   } catch {
     throw new Error("网络连接失败，请检查网络后重试");
   }
@@ -444,6 +454,7 @@ function uploadWithProgress(url, formData, onProgress, method = "POST") {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open(method, url);
+    xhr.setRequestHeader("X-CSRF-Token", state.csrfToken);
     xhr.responseType = "json";
     xhr.timeout = UPLOAD_REQUEST_TIMEOUT_MS;
     xhr.upload.addEventListener("progress", (event) => {
@@ -795,7 +806,10 @@ elements.copyLatestButton.addEventListener("click", async () => {
 });
 
 elements.logoutButton.addEventListener("click", async () => {
-  await fetch("/api/auth", { method: "DELETE" });
+  await fetch("/api/auth", {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": state.csrfToken }
+  });
   redirectToLogin();
 });
 
@@ -865,4 +879,16 @@ elements.dropzone.addEventListener("drop", (event) => {
   handleFiles(event.dataTransfer.files);
 });
 
-loadRecords();
+async function initialize() {
+  const session = await api("/api/auth");
+  if (!session.authenticated || !session.csrfToken) {
+    redirectToLogin();
+    return;
+  }
+  state.csrfToken = session.csrfToken;
+  await loadRecords();
+}
+
+void initialize().catch((error) => {
+  showToast(error.message);
+});

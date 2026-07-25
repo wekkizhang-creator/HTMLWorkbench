@@ -6,7 +6,18 @@ import { getRecord, getSiteFileContent, getUploadContent } from "../lib/storage.
 export async function GET(request) {
   try {
     const requestUrl = new URL(request.url);
+    const config = getRuntimeConfig();
+    const requestHost = requestUrl.host.toLowerCase();
+    const adminHost = new URL(config.adminOrigin).host.toLowerCase();
+    const publicHost = new URL(config.publicOrigin).host.toLowerCase();
     const id = requestUrl.searchParams.get("id");
+    if (requestHost === adminHost) {
+      return Response.redirect(
+        new URL(`/view/${encodeURIComponent(id || "")}`, config.publicOrigin),
+        307
+      );
+    }
+    if (requestHost !== publicHost) return error("HTML page does not exist", 404);
     const assetPath = requestUrl.searchParams.get("path") || "";
     assertRecordId(id);
     const record = await getRecord(id);

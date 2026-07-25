@@ -207,6 +207,40 @@ SERVER_SSH_KEY=<private deployment key>
 SERVER_HOST_KEY=163.7.4.158 ssh-ed25519 <server public host key>
 ```
 
+
+### Domain security boundary
+
+The production origins are fixed:
+
+```text
+HTML_WORKBENCH_ADMIN_ORIGIN=https://ho.wekki.fun
+HTML_WORKBENCH_PUBLIC_ORIGIN=https://page.wekki.fun
+```
+
+For a single Vercel project, root `middleware.js` applies the Host policy before
+filesystem and API routing. `page.wekki.fun` exposes only `/healthz` and
+`/view/<id>`; login, management static files, and management APIs return 404.
+Legacy `/view/<id>` requests on `ho.wekki.fun` redirect to the public origin.
+
+Authenticated admin writes require both the exact admin `Origin` and an
+`X-CSRF-Token` bound to the current management session. The management frontend
+loads this token from `GET /api/auth` and sends it on upload, replace, rollback,
+delete, and logout requests. Login itself has no existing session token, so its
+POST is protected by the exact admin Origin check.
+
+Self-hosted content runs with `/etc/html-workbench-content.env`:
+
+```text
+HTML_WORKBENCH_DATA_DIR=/var/lib/html-workbench
+HTML_WORKBENCH_ADMIN_ORIGIN=https://ho.wekki.fun
+HTML_WORKBENCH_PUBLIC_ORIGIN=https://page.wekki.fun
+```
+
+Deployment owns this non-secret file and validates it with the `content-host`
+profile. The content systemd unit and Compose service must not receive
+`HTML_WORKBENCH_PASSWORD`, `HTML_WORKBENCH_AUTH_SECRET`,
+`HTML_WORKBENCH_DOWNLOAD_PASSWORD`, or `HTML_WORKBENCH_CURSOR_SECRET`. Admin and
+migration continue using the strict credential profile on every startup.
 Obtain the host public key through a trusted server console or hosting control plane, not through the deployment SSH connection. For example, read `/etc/ssh/ssh_host_ed25519_key.pub` locally on the server, construct the `known_hosts` line above, and compare its fingerprint out of band with:
 
 ```bash

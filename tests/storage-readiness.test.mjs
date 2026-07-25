@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { constants as fsConstants } from "node:fs";
 import test from "node:test";
 
 import * as storage from "../lib/storage.mjs";
@@ -21,5 +22,13 @@ test("Blob readiness is time bounded", async () => {
   await assert.rejects(
     storage.checkBlobReadiness(() => new Promise(() => {}), 10),
     /timed out/i
+  );
+});
+
+test("content readiness requires reads only while admin readiness requires reads and writes", () => {
+  assert.equal(storage.getLocalReadinessAccessMode({ writable: false }), fsConstants.R_OK);
+  assert.equal(
+    storage.getLocalReadinessAccessMode({ writable: true }),
+    fsConstants.R_OK | fsConstants.W_OK
   );
 });

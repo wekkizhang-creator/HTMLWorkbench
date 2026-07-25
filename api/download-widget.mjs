@@ -1,9 +1,11 @@
+import { isAdminHostRequest } from "../lib/auth.mjs";
 import { error } from "../lib/http.mjs";
 import { assertRecordId } from "../lib/records.mjs";
 import { getRuntimeConfig } from "../lib/runtime.mjs";
 
 export async function GET(request) {
   try {
+    if (!isAdminHostRequest(request)) return error("Page does not exist", 404);
     const requestUrl = new URL(request.url);
     const id = requestUrl.searchParams.get("id") || requestUrl.pathname.split("/").filter(Boolean).pop();
     assertRecordId(id);

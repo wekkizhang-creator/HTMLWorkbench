@@ -1,5 +1,5 @@
 import { error, json, methodNotAllowed } from "../lib/http.mjs";
-import { isAuthorizedRequest } from "../lib/auth.mjs";
+import { isAdminHostRequest, isAuthorizedRequest, managementRequestFailure } from "../lib/auth.mjs";
 import { normalizePageRequest } from "../lib/cursor.mjs";
 import {
   assertUploadFile,
@@ -20,6 +20,7 @@ import { parseZipWebsite } from "../lib/zip.mjs";
 
 export async function GET(request) {
   try {
+    if (!isAdminHostRequest(request)) return error("Page does not exist", 404);
     if (!isAuthorizedRequest(request)) {
       return error("Please enter the access password first", 401);
     }
@@ -32,9 +33,8 @@ export async function GET(request) {
 
 export async function POST(request) {
   try {
-    if (!isAuthorizedRequest(request)) {
-      return error("Please enter the access password first", 401);
-    }
+    const failure = managementRequestFailure(request);
+    if (failure) return error(failure.message, failure.status);
     return await withRecordMutation(async () => {
       const form = await request.formData();
       const file = form.get("file");

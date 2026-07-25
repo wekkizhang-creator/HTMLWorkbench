@@ -167,3 +167,39 @@ test("admin role redirects legacy view paths without losing suffix or query", as
     await server.close();
   }
 });
+
+test("Vercel host policy blocks public management paths and redirects admin views", async () => {
+  await withEnv({
+    HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",
+    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun"
+  }, async () => {
+    const runtime = await importFresh("../lib/runtime.mjs");
+    assert.equal(typeof runtime.getVercelHostDecision, "function");
+    for (const pathname of ["/api/auth", "/api/uploads", "/login.html", "/index.html"]) {
+      assert.deepEqual(
+        runtime.getVercelHostDecision(new URL(`https://page.wekki.fun${pathname}`)),
+        { action: "not-found" }
+      );
+    }
+    assert.deepEqual(
+      runtime.getVercelHostDecision(new URL(`https://page.wekki.fun/view/${TEST_RECORD_ID}`)),
+      { action: "next" }
+    );
+    assert.deepEqual(
+      runtime.getVercelHostDecision(new URL(`https://ho.wekki.fun/view/${TEST_RECORD_ID}?v=2`)),
+      {
+        action: "redirect",
+        location: `https://page.wekki.fun/view/${TEST_RECORD_ID}?v=2`
+      }
+    );
+  });
+});
+
+test("Vercel routing middleware enforces the host decision before filesystem and API routing", async () => {
+  const middleware = await fs.readFile("middleware.js", "utf8");
+  assert.match(middleware, /getVercelHostDecision/);
+  assert.match(middleware, /@vercel\/functions/);
+  assert.match(middleware, /status:\s*404/);
+  assert.match(middleware, /status:\s*307/);
+  assert.match(middleware, /next\(\)/);
+});

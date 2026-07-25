@@ -116,6 +116,20 @@ test("Docker entrypoint validates credentials before every service command", asy
     assert.match(result.stderr, new RegExp(name));
   }
 });
+
+test("Docker content profile starts without receiving management credentials", async () => {
+  const dockerfile = await fs.readFile(DOCKERFILE_PATH, "utf8");
+  const entrypointMatch = dockerfile.match(/^ENTRYPOINT \["node", "([^"]+)"\]\s*$/m);
+  const content = runContainerEntrypoint(entrypointMatch[1], {
+    HTML_WORKBENCH_ROLE: "content",
+    HTML_WORKBENCH_PASSWORD: undefined,
+    HTML_WORKBENCH_AUTH_SECRET: undefined,
+    HTML_WORKBENCH_DOWNLOAD_PASSWORD: undefined,
+    HTML_WORKBENCH_CURSOR_SECRET: undefined
+  });
+  assert.equal(content.status, 0, content.stderr);
+});
+
 test("migration failure blocks both long-running Compose roles", async () => {
   const services = parseComposeServices(await fs.readFile(COMPOSE_PATH, "utf8"));
   for (const name of ["html-workbench-init", "migration", "admin", "content"]) {
@@ -151,7 +165,7 @@ test("Compose migration writes shared data while content mounts it read-only", a
   assert.match(content, /^\s*-\s*html-workbench-data:\/data:ro\s*$/m);
 });
 
-test("Compose uses role-specific healthchecks and requires credentials for every application role", async () => {
+test("Compose uses role-specific healthchecks and keeps management credentials out of content", async () => {
   const services = parseComposeServices(await fs.readFile(COMPOSE_PATH, "utf8"));
   const migration = services.get("migration")?.source || "";
   const admin = services.get("admin")?.source || "";
@@ -169,6 +183,6 @@ test("Compose uses role-specific healthchecks and requires credentials for every
   ]) {
     assert.match(migration, new RegExp(`${name}:\\s*["']?\\$\\{${name}:\\?[^}\\r\\n]+\\}["']?`));
     assert.match(admin, new RegExp(`${name}:\\s*["']?\\$\\{${name}:\\?[^}\\r\\n]+\\}["']?`));
-    assert.match(content, new RegExp(`${name}:\\s*["']?\\$\\{${name}:\\?[^}\\r\\n]+\\}["']?`));
+    assert.doesNotMatch(content, new RegExp(`${name}:`));
   }
 });

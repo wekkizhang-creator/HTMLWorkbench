@@ -153,6 +153,7 @@ function createFakeXMLHttpRequest(instances) {
       this.responseText = "";
       this.status = 0;
       this.timeout = 0;
+      this.headers = new Map();
       this.upload = new FakeEventTarget();
       instances.push(this);
     }
@@ -160,6 +161,10 @@ function createFakeXMLHttpRequest(instances) {
     open(method, url) {
       this.method = method;
       this.url = url;
+    }
+
+    setRequestHeader(name, value) {
+      this.headers.set(String(name).toLowerCase(), String(value));
     }
 
     send(body) {
@@ -262,7 +267,10 @@ async function createAppHarness(initialResponses = []) {
   customField.closestTargets = new Map([[".upload-meta-grid", uploadGrid]]);
   elements.documentTypeCustom.closestTargets = new Map([[".field-control", customField]]);
 
-  const responses = [...initialResponses];
+  const responses = [
+    jsonResponse(200, { authenticated: true, csrfToken: "test-session-csrf-token" }),
+    ...initialResponses
+  ];
   const requests = [];
   const xhrs = [];
   const replacementFiles = [];
@@ -333,6 +341,7 @@ async function createAppHarness(initialResponses = []) {
   const context = {
     AbortController,
     FormData,
+    Headers,
     Intl,
     URL,
     URLSearchParams,
@@ -369,12 +378,12 @@ async function createAppHarness(initialResponses = []) {
   };
 }
 
-test("startup asks the server for the first 50 records with no auth preflight", async () => {
+test("startup obtains a CSRF token before asking for the first 50 records", async () => {
   const record = sampleRecord();
   const harness = await createAppHarness([recordsResponse([record])]);
 
   await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
-  assert.deepEqual(harness.requests.map(({ url }) => url), ["/api/uploads?limit=50"]);
+  assert.deepEqual(harness.requests.map(({ url }) => url), ["/api/auth", "/api/uploads?limit=50"]);
   assert.equal(harness.elements.recordBody.children.length, 1);
   assert.match(harness.elements.recordBody.children[0].innerHTML, /已加载的记录/);
   assert.match(harness.elements.recordBody.children[0].innerHTML, /一份可检索的示例说明/);
@@ -399,9 +408,9 @@ test("failed refresh preserves rendered rows and the prior continuation cursor",
   assert.equal(harness.elements.loadMoreButton.disabled, false);
 
   await harness.elements.loadMoreButton.dispatch("click");
-  await waitFor(() => harness.requests.length === 3);
+  await waitFor(() => harness.requests.length === 4);
 
-  assert.equal(harness.requests[2].url, "/api/uploads?limit=50&cursor=prior-continuation-cursor");
+  assert.equal(harness.requests[3].url, "/api/uploads?limit=50&cursor=prior-continuation-cursor");
   assert.equal(harness.elements.recordBody.children.length, 2);
   assert.match(harness.elements.recordBody.children[1].innerHTML, /Next page/);
 });
@@ -424,12 +433,12 @@ test("first-load network failure shows retry state and retry recovers", async ()
   assert.match(harness.elements.recordBody.children[0].innerHTML, /重试成功/);
 });
 
-test("401 during startup redirects to login without an auth preflight", async () => {
+test("401 after the auth preflight redirects to login", async () => {
   const harness = await createAppHarness([jsonResponse(401, { error: "登录已过期" })]);
   await waitFor(() => harness.location.href.startsWith("/login.html"));
 
   assert.equal(harness.location.href, "/login.html?next=%2F");
-  assert.deepEqual(harness.requests.map(({ url }) => url), ["/api/uploads?limit=50"]);
+  assert.deepEqual(harness.requests.map(({ url }) => url), ["/api/auth", "/api/uploads?limit=50"]);
 });
 
 test("first-load errors are announced and indefinite motion respects user preferences", async () => {
@@ -459,6 +468,7 @@ test("load more sends the current cursor and appends records deduplicated by id"
   await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
 
   assert.deepEqual(harness.requests.map(({ url }) => url), [
+    "/api/auth",
     "/api/uploads?limit=50",
     "/api/uploads?limit=50&cursor=opaque-next-cursor"
   ]);
@@ -471,7 +481,7 @@ test("load more sends the current cursor and appends records deduplicated by id"
   await harness.elements.loadMoreButton.dispatch("click");
   await waitFor(() => harness.elements.recordsPanel.getAttribute("aria-busy") === "false");
 
-  assert.equal(harness.requests[2].url, "/api/uploads?limit=50&cursor=second-opaque-cursor");
+  assert.equal(harness.requests[3].url, "/api/uploads?limit=50&cursor=second-opaque-cursor");
   assert.equal(harness.elements.recordBody.children.length, 3);
   assert.equal(harness.elements.loadMoreButton.hidden, true);
 });
@@ -491,13 +501,14 @@ test("search waits 200ms, sends q to the server, and resets to page one", async 
   assert.equal(harness.elements.recordBody.children.length, 1);
 
   harness.advanceTimersBy(199);
-  assert.equal(harness.requests.length, 1);
+  assert.equal(harness.requests.length, 2);
 
   harness.advanceTimersBy(1);
   await waitFor(() => harness.elements.recordBody.children.length === 1
     && /Deep target record/.test(harness.elements.recordBody.children[0].innerHTML));
 
   assert.deepEqual(harness.requests.map(({ url }) => url), [
+    "/api/auth",
     "/api/uploads?limit=50",
     "/api/uploads?limit=50&q=Deep+target"
   ]);
@@ -517,11 +528,12 @@ test("type filters are sent to the server and refresh restarts at page one", asy
 
   harness.elements.typeFilter.value = "Analysis";
   await harness.elements.typeFilter.dispatch("change");
-  await waitFor(() => harness.requests.length === 2);
+  await waitFor(() => harness.requests.length === 3);
 
   await harness.elements.refreshButton.dispatch("click");
 
   assert.deepEqual(harness.requests.map(({ url }) => url), [
+    "/api/auth",
     "/api/uploads?limit=50",
     "/api/uploads?limit=50&documentType=Analysis",
     "/api/uploads?limit=50&documentType=Analysis"
@@ -541,7 +553,7 @@ test("a late response from an abandoned search cannot replace a newer query", as
   harness.elements.searchInput.value = "Old query";
   await harness.elements.searchInput.dispatch("input");
   harness.advanceTimersBy(200);
-  await waitFor(() => harness.requests.length === 2);
+  await waitFor(() => harness.requests.length === 3);
 
   harness.elements.searchInput.value = "New query";
   await harness.elements.searchInput.dispatch("input");

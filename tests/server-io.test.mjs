@@ -90,7 +90,8 @@ async function authenticate(origin) {
     body,
     headers: {
       "Content-Length": String(Buffer.byteLength(body)),
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      Origin: origin
     },
     method: "POST"
   });
@@ -274,7 +275,8 @@ test("a request body at the 31 MiB boundary is accepted by the body collector", 
       body,
       headers: {
         "Content-Length": String(body.length),
-        "Content-Type": "application/octet-stream"
+        "Content-Type": "application/octet-stream",
+        Origin: origin
       },
       method: "POST",
       timeoutMs: 10000

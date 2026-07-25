@@ -1,5 +1,5 @@
 import { error, json, methodNotAllowed } from "../lib/http.mjs";
-import { isAuthorizedRequest } from "../lib/auth.mjs";
+import { managementRequestFailure } from "../lib/auth.mjs";
 import {
   assertRecordId,
   assertUploadFile,
@@ -23,9 +23,8 @@ import { parseZipWebsite } from "../lib/zip.mjs";
 
 export async function DELETE(request) {
   try {
-    if (!isAuthorizedRequest(request)) {
-      return error("Please enter the access password first", 401);
-    }
+    const failure = managementRequestFailure(request);
+    if (failure) return error(failure.message, failure.status);
     return await withRecordMutation(async () => {
       const id = new URL(request.url).searchParams.get("id");
       assertRecordId(id);
@@ -44,9 +43,8 @@ export async function DELETE(request) {
 
 export async function PUT(request) {
   try {
-    if (!isAuthorizedRequest(request)) {
-      return error("Please enter the access password first", 401);
-    }
+    const failure = managementRequestFailure(request);
+    if (failure) return error(failure.message, failure.status);
     return await withRecordMutation(async () => {
       const id = new URL(request.url).searchParams.get("id");
       assertRecordId(id);
@@ -104,9 +102,8 @@ export async function PUT(request) {
 
 export async function PATCH(request) {
   try {
-    if (!isAuthorizedRequest(request)) {
-      return error("Please enter the access password first", 401);
-    }
+    const failure = managementRequestFailure(request);
+    if (failure) return error(failure.message, failure.status);
     return await withRecordMutation(async () => {
       const id = new URL(request.url).searchParams.get("id");
       assertRecordId(id);

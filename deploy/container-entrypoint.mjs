@@ -4,7 +4,10 @@ import os from "node:os";
 import { validateEffectiveEnvironment } from "./self-host/validate-env.mjs";
 
 try {
-  validateEffectiveEnvironment(process.env, { profile: "container" });
+  const profile = process.env.HTML_WORKBENCH_ROLE === "content"
+    ? "content-container"
+    : "container";
+  validateEffectiveEnvironment(process.env, { profile });
 } catch (error) {
   process.stderr.write(`${error.message}\n`);
   process.exit(78);
