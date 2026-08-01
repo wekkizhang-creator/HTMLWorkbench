@@ -23,7 +23,12 @@
 
         <div id="pinLayer" class="pin-layer" aria-label="桌面贴图"></div>
         <div id="captureOverlay" class="capture-overlay" hidden>
-          <div id="selectionBox" class="selection-box" hidden></div>
+          <div id="selectionBox" class="selection-box" hidden>
+            <span data-handle="nw" aria-hidden="true"></span><span data-handle="n" aria-hidden="true"></span>
+            <span data-handle="ne" aria-hidden="true"></span><span data-handle="e" aria-hidden="true"></span>
+            <span data-handle="se" aria-hidden="true"></span><span data-handle="s" aria-hidden="true"></span>
+            <span data-handle="sw" aria-hidden="true"></span><span data-handle="w" aria-hidden="true"></span>
+          </div>
           <canvas id="annotationCanvas" aria-label="截图标注画布"></canvas>
           <output id="selectionSize" class="selection-size" hidden></output>
           <div id="magnifier" class="magnifier" hidden aria-hidden="true"></div>

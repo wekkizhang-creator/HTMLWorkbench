@@ -37,6 +37,21 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .toast { position: fixed; top: 24px; left: 50%; z-index: 100; transform: translate(-50%,-20px); opacity: 0; padding: 10px 14px; border-radius: 9px; background: var(--graphite); box-shadow: 0 16px 40px rgba(0,0,0,.35); transition: .18s ease; }
 .toast.is-visible { transform: translate(-50%,0); opacity: 1; }
 
+.capture-overlay { position: absolute; inset: 0; z-index: 30; cursor: crosshair; background: rgba(0,0,0,.55); }
+.selection-box { position: absolute; z-index: 31; border: 2px solid var(--blue); background: rgba(255,255,255,.03); box-shadow: 0 0 0 9999px rgba(0,0,0,.01); }
+.selection-box [data-handle] { position: absolute; width: 10px; height: 10px; border: 2px solid var(--blue); border-radius: 50%; background: var(--white); transform: translate(-50%,-50%); }
+.selection-box [data-handle="nw"] { left: 0; top: 0; cursor: nwse-resize; }
+.selection-box [data-handle="n"] { left: 50%; top: 0; cursor: ns-resize; }
+.selection-box [data-handle="ne"] { left: 100%; top: 0; cursor: nesw-resize; }
+.selection-box [data-handle="e"] { left: 100%; top: 50%; cursor: ew-resize; }
+.selection-box [data-handle="se"] { left: 100%; top: 100%; cursor: nwse-resize; }
+.selection-box [data-handle="s"] { left: 50%; top: 100%; cursor: ns-resize; }
+.selection-box [data-handle="sw"] { left: 0; top: 100%; cursor: nesw-resize; }
+.selection-box [data-handle="w"] { left: 0; top: 50%; cursor: ew-resize; }
+.selection-size { position: absolute; z-index: 34; min-height: 24px; padding: 3px 8px; border-radius: 6px; background: var(--graphite); color: var(--white); font-size: 12px; }
+.magnifier { position: absolute; z-index: 35; width: 132px; height: 104px; border: 1px solid rgba(255,255,255,.28); border-radius: 8px; background: repeating-conic-gradient(#d8dde5 0 25%,#eef1f5 0 50%) 0/16px 16px; box-shadow: 0 12px 28px rgba(0,0,0,.32); pointer-events: none; }
+.magnifier::after { content: ""; position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; border: 1px solid var(--blue); transform: translate(-50%,-50%); }
+.annotation-toolbar { position: absolute; z-index: 36; display: flex; align-items: center; min-height: 48px; padding: 6px; border: 1px solid rgba(255,255,255,.12); border-radius: 11px; background: rgba(23,26,31,.94); box-shadow: 0 18px 46px rgba(0,0,0,.36); backdrop-filter: blur(14px); }
 @media (prefers-reduced-motion: reduce) {
   .toast { transition: none; }
 }
