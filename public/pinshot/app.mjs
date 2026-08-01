@@ -2,6 +2,7 @@ import { createCaptureController } from "./capture.mjs";
 import { createCanvasController } from "./canvas.mjs";
 import { DEFAULT_SETTINGS } from "./settings.mjs";
 import { createInitialState, createStore } from "./state.mjs";
+import { createOutputRunner } from "./output.mjs";
 
 const app = document.querySelector("#pinshotApp");
 if (!app) throw new Error("PinShot root is missing");
@@ -11,6 +12,7 @@ const desktopScene = document.querySelector("#desktopScene");
 const overlay = document.querySelector("#captureOverlay");
 const canvas = document.querySelector("#annotationCanvas");
 const toolbar = document.querySelector("#annotationToolbar");
+const toast = document.querySelector("#toast");
 const store = createStore(createInitialState());
 const capture = createCaptureController({
   root: desktopScene,
@@ -28,9 +30,19 @@ const annotationCanvas = createCanvasController({
   onCommit: (annotation) => store.dispatch({ type: "ANNOTATION_COMMIT", annotation })
 });
 
+const runOutput = createOutputRunner({
+  store,
+  annotationCanvas: canvas,
+  getViewport: () => ({ width: desktopScene.clientWidth, height: desktopScene.clientHeight }),
+  documentRef: document,
+  closeCapture: () => capture.cancel()
+});
+
 function render(state) {
   app.dataset.mode = state.mode;
   const selection = state.selection;
+  toast.textContent = state.toast || "";
+  toast.classList.toggle("is-visible", Boolean(state.toast));
   canvas.hidden = !selection;
   if (selection) {
     Object.assign(canvas.style, {
@@ -57,6 +69,10 @@ toolbar.addEventListener("click", (event) => {
   const command = commandButton?.dataset.command;
   if (command === "undo") store.dispatch({ type: "ANNOTATION_UNDO" });
   if (command === "redo") store.dispatch({ type: "ANNOTATION_REDO" });
+  if (["copy", "save", "complete"].includes(command)) {
+    void runOutput(command);
+    return;
+  }
   if (command && !["undo", "redo"].includes(command)) store.dispatch({ type: "TOAST_SHOW", message: `${commandButton.getAttribute("aria-label")}将在下一步实现` });
 });
 
@@ -70,3 +86,11 @@ function candidateRects() {
 
 capture.mount(candidateRects());
 document.querySelector("#captureLauncher").addEventListener("click", () => capture.start());
+
+document.addEventListener("keydown", (event) => {
+  const target = event.target;
+  if (event.key !== "Enter" || target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+  if (!store.getState().selection) return;
+  event.preventDefault();
+  void runOutput("copy");
+});
