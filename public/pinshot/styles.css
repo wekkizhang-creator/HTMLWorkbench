@@ -36,3 +36,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .prototype-notice { position: fixed; left: 20px; bottom: 18px; margin: 0; max-width: 440px; color: rgba(255,255,255,.68); font-size: 12px; }
 .toast { position: fixed; top: 24px; left: 50%; z-index: 100; transform: translate(-50%,-20px); opacity: 0; padding: 10px 14px; border-radius: 9px; background: var(--graphite); box-shadow: 0 16px 40px rgba(0,0,0,.35); transition: .18s ease; }
 .toast.is-visible { transform: translate(-50%,0); opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .toast { transition: none; }
+}

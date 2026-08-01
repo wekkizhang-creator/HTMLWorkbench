@@ -221,3 +221,21 @@ test("PinShot page and browser module are served without admin authentication", 
     assert.match(module.body.toString("utf8"), /data-pinshot-ready/);
   });
 });
+
+test("PinShot shell uses valid markup and honors reduced motion", async () => {
+  await withServer(async (origin) => {
+    const page = await request(origin, "/pinshot.html");
+    assert.equal(page.status, 200);
+    const pageBody = page.body.toString("utf8");
+    assert.match(pageBody, /<title>PinShot \u622a\u8d34 \u00b7 PC \u622a\u56fe\u5de5\u5177\u539f\u578b<\/title>/);
+    assert.doesNotMatch(pageBody, /\?\/[a-z]/i);
+
+    const styles = await request(origin, "/pinshot/styles.css");
+    assert.equal(styles.status, 200);
+    assert.equal(styles.headers["content-type"], "text/css; charset=utf-8");
+    assert.match(
+      styles.body.toString("utf8"),
+      /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\.toast\s*\{\s*transition:\s*none;\s*}/
+    );
+  });
+});
