@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, findShortcutConflict } from "./settings.mjs";
+import { DEFAULT_SETTINGS, findShortcutConflict, sanitizeSettings } from "./settings.mjs";
 
 const clone = (value) => structuredClone(value);
 const blockedShortcuts = new Set(["Ctrl+S", "Ctrl+P", "Ctrl+W", "Ctrl+T", "Ctrl+L", "Alt+Left", "Alt+Right"]);
@@ -37,8 +37,10 @@ function updatePreviews(dialog, settings) {
   dialog.querySelectorAll(".settings-preview").forEach((preview) => {
     preview.dataset.theme = settings.theme;
     preview.style.setProperty("--preview-accent", settings.annotationColor);
-    preview.style.setProperty("--preview-mask", String(settings.maskOpacity / 100));
+    preview.style.setProperty("--preview-mask", settings.showMask ? String(settings.maskOpacity / 100) : "0");
+    preview.style.setProperty("--preview-border", settings.showBorder ? `${settings.borderWidth}px` : "0px");
     preview.style.setProperty("--preview-pin-opacity", String(settings.pinOpacity / 100));
+    preview.dataset.captureFeedback = `${settings.showMask ? "遮罩 开" : "遮罩 关"} · ${settings.showBorder ? "边框 开" : "边框 关"} · ${settings.showHandles ? "控制点 开" : "控制点 关"}`;
     preview.classList.toggle("has-shadow", settings.pinShadow);
   });
 }
@@ -48,12 +50,12 @@ function settingsForPanel(panel) {
 }
 
 export function createSettingsView({ dialog, settings, onChange = () => {}, onReset = onChange, onClose = () => {} }) {
-  let current = clone(settings);
+  let current = clone(sanitizeSettings(settings));
   const sectionButtons = [...dialog.querySelectorAll("[data-settings-section]")];
   const panels = [...dialog.querySelectorAll("[data-settings-panel]")];
 
   function commit(next, reset = false) {
-    current = clone(next);
+    current = clone(sanitizeSettings(next));
     writeFields(dialog, current);
     updatePreviews(dialog, current);
     (reset ? onReset : onChange)(clone(current));

@@ -135,6 +135,9 @@ function attachPinEvents(card, pin, dispatch, settings) {
     if (event.shiftKey && configuredAction(settings, "copyText") === "Shift+RightClick") {
       event.preventDefault();
       dispatch({ type: "TOAST_SHOW", message: pin.recognizedText ? "\u5df2\u590d\u5236\u8bc6\u522b\u6587\u5b57" : "\u672a\u8bc6\u522b\u5230\u53ef\u590d\u5236\u6587\u5b57" });
+    } else if (!event.shiftKey && configuredAction(settings, "closePin") === "RightClick") {
+      event.preventDefault();
+      dispatch({ type: "PIN_REMOVE", id: pin.id });
     }
   });
 }

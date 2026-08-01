@@ -98,8 +98,10 @@ store.subscribe(render);
 
 function applySettings(settings) {
   document.documentElement.dataset.theme = settings.theme;
-  desktopScene.style.setProperty("--capture-mask-opacity", String(settings.maskOpacity / 100));
-  desktopScene.style.setProperty("--capture-border-width", `${settings.borderWidth}px`);
+  desktopScene.style.setProperty("--capture-mask-opacity", settings.showMask ? String(settings.maskOpacity / 100) : "0");
+  desktopScene.style.setProperty("--capture-border-width", settings.showBorder ? `${settings.borderWidth}px` : "0px");
+  desktopScene.style.setProperty("--capture-handles-display", settings.showHandles ? "block" : "none");
+  desktopScene.style.setProperty("--magnifier-display", settings.showMagnifierBorder ? "block" : "none");
   pinLayer.style.setProperty("--pin-shadow", settings.pinShadow ? "0 16px 42px rgba(0,0,0,.34)" : "none");
   pinLayer.style.setProperty("--pin-opacity", String(settings.pinOpacity / 100));
 }

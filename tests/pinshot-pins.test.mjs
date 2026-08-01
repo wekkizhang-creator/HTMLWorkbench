@@ -72,6 +72,24 @@ test("pin drag and wheel routes dispatch pin updates while locked cards ignore d
   assert.equal(actions.filter((action) => action.id === "locked").length, 0);
 });
 
+test("configured right-click closes a pin while shift-right-click keeps copy-text priority", () => {
+  const { pinLayer } = createFakeDom();
+  const actions = [];
+  const rightClickSettings = { mouseActions: { ...mouseActions, closePin: "RightClick" } };
+  renderPins(pinLayer, [createPin({ id: "right-click" })], (action) => actions.push(action), rightClickSettings);
+  const card = pinLayer.children[0];
+  card.emit("dblclick");
+  assert.equal(actions.length, 0);
+  const closeEvent = card.emit("contextmenu");
+  assert.equal(closeEvent.prevented, true);
+  assert.deepEqual(actions, [{ type: "PIN_REMOVE", id: "right-click" }]);
+
+  actions.length = 0;
+  card.emit("contextmenu", { shiftKey: true });
+  assert.equal(actions.some((action) => action.type === "PIN_REMOVE"), false);
+  assert.equal(actions.some((action) => action.type === "TOAST_SHOW"), true);
+});
+
 test("pin history displays eight thumbnails and restores the selected item", () => {
   const { pinLayer, historyStrip } = createFakeDom();
   const actions = [];
