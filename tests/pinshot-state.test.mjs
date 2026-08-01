@@ -31,3 +31,16 @@ test("history keeps the newest eight captures", () => {
   assert.equal(state.history.length, 8);
   assert.deepEqual(state.history.map((item) => item.id), ["shot-9","shot-8","shot-7","shot-6","shot-5","shot-4","shot-3","shot-2"]);
 });
+
+test("annotation reducer actions retain immutable undo and redo snapshots", () => {
+  let state = createInitialState();
+  const initialHistory = state.annotations;
+  state = reducer(state, { type: "ANNOTATION_COMMIT", annotation: { id: "note-1", type: "rectangle" } });
+  assert.equal(state.mode, "annotating");
+  assert.deepEqual(state.annotations.present.map((item) => item.id), ["note-1"]);
+  assert.notEqual(state.annotations, initialHistory);
+  state = reducer(state, { type: "ANNOTATION_UNDO" });
+  assert.deepEqual(state.annotations.present, []);
+  state = reducer(state, { type: "ANNOTATION_REDO" });
+  assert.deepEqual(state.annotations.present.map((item) => item.id), ["note-1"]);
+});

@@ -32,7 +32,24 @@
           <canvas id="annotationCanvas" aria-label="截图标注画布"></canvas>
           <output id="selectionSize" class="selection-size" hidden></output>
           <div id="magnifier" class="magnifier" hidden aria-hidden="true"></div>
-          <div id="annotationToolbar" class="annotation-toolbar" role="toolbar" aria-label="截图标注工具" hidden></div>
+          <div id="annotationToolbar" class="annotation-toolbar" role="toolbar" aria-label="截图标注工具" hidden>
+            <button type="button" data-tool="select" title="选择 V" aria-label="选择" aria-pressed="true">选择</button>
+            <button type="button" data-tool="rectangle" title="矩形 R" aria-label="矩形" aria-pressed="false">矩形</button>
+            <button type="button" data-tool="arrow" title="箭头 A" aria-label="箭头" aria-pressed="false">箭头</button>
+            <button type="button" data-tool="pen" title="画笔 P" aria-label="画笔" aria-pressed="false">画笔</button>
+            <button type="button" data-tool="highlight" title="荧光笔 H" aria-label="荧光笔" aria-pressed="false">荧光笔</button>
+            <button type="button" data-tool="text" title="文字 T" aria-label="文字" aria-pressed="false">文字</button>
+            <button type="button" data-tool="number" title="序号 N" aria-label="序号" aria-pressed="false">序号</button>
+            <button type="button" data-tool="mosaic" title="马赛克 M" aria-label="马赛克" aria-pressed="false">马赛克</button>
+            <button type="button" data-tool="color" title="取色 I" aria-label="取色" aria-pressed="false">取色</button>
+            <span class="toolbar-separator" role="separator" aria-orientation="vertical"></span>
+            <button type="button" data-command="undo" title="撤销 Ctrl+Z" aria-label="撤销">撤销</button>
+            <button type="button" data-command="redo" title="重做 Ctrl+Shift+Z" aria-label="重做">重做</button>
+            <button type="button" data-command="copy" title="复制 Enter" aria-label="复制">复制</button>
+            <button type="button" data-command="save" title="保存 Ctrl+S" aria-label="保存">保存</button>
+            <button type="button" data-command="pin" title="贴图 F3" aria-label="贴图">贴图</button>
+            <button type="button" data-command="complete" title="完成 Esc" aria-label="完成">完成</button>
+          </div>
         </div>
 
         <aside id="historyStrip" class="history-strip" aria-label="最近截图" hidden></aside>

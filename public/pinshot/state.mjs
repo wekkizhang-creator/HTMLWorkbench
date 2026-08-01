@@ -1,3 +1,5 @@
+import { commitAnnotation, redoAnnotation, undoAnnotation } from "./annotations.mjs";
+
 export function createInitialState(overrides = {}) {
   return {
     mode: "idle",
@@ -19,6 +21,9 @@ export function reducer(state, action) {
     case "CAPTURE_CANCEL": return { ...state, mode: "idle", selection: null, annotations: { past: [], present: [], future: [] } };
     case "SELECTION_SET": return { ...state, mode: "selected", selection: { ...action.rect } };
     case "TOOL_SELECT": return { ...state, mode: "annotating", activeTool: action.tool };
+    case "ANNOTATION_COMMIT": return { ...state, mode: "annotating", annotations: commitAnnotation(state.annotations, action.annotation) };
+    case "ANNOTATION_UNDO": return { ...state, annotations: undoAnnotation(state.annotations) };
+    case "ANNOTATION_REDO": return { ...state, annotations: redoAnnotation(state.annotations) };
     case "PIN_CREATE": return { ...state, mode: "idle", pins: [...state.pins, { opacity: 100, scale: 1, locked: false, collapsed: false, group: "default", ...action.pin }], selection: null };
     case "PIN_UPDATE": return { ...state, pins: state.pins.map((pin) => pin.id === action.id ? { ...pin, ...action.patch } : pin) };
     case "PIN_REMOVE": return { ...state, pins: state.pins.filter((pin) => pin.id !== action.id) };
