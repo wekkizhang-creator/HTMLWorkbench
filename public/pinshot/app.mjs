@@ -1,6 +1,7 @@
 import { createCaptureController } from "./capture.mjs";
 import { createCanvasController } from "./canvas.mjs";
-import { DEFAULT_SETTINGS } from "./settings.mjs";
+import { DEFAULT_SETTINGS, loadSettings, resetSettings, saveSettings } from "./settings.mjs";
+import { createSettingsView } from "./settings-view.mjs";
 import { createInitialState, createStore } from "./state.mjs";
 import { canvasToBlob, createCompositeCanvas, createOutputRunner } from "./output.mjs";
 import { createPinActions, renderPins } from "./pins.mjs";
@@ -14,6 +15,8 @@ const overlay = document.querySelector("#captureOverlay");
 const canvas = document.querySelector("#annotationCanvas");
 const toolbar = document.querySelector("#annotationToolbar");
 const toast = document.querySelector("#toast");
+let recoveryNotice = "";
+let activeSettings = loadSettings(window.localStorage, (message) => { recoveryNotice = message; });
 const store = createStore(createInitialState());
 const pinActions = createPinActions({
   clipboard: navigator.clipboard,
@@ -30,12 +33,12 @@ const capture = createCaptureController({
   sizeLabel: document.querySelector("#selectionSize"),
   magnifier: document.querySelector("#magnifier"),
   toolbar
-}, store, () => DEFAULT_SETTINGS);
+}, store, () => activeSettings);
 const annotationCanvas = createCanvasController({
   canvas,
   getSelection: () => store.getState().selection,
   getTool: () => store.getState().activeTool,
-  getStyle: () => ({ color: "#4C8DFF", width: 3 }),
+  getStyle: () => ({ color: activeSettings.annotationColor, width: activeSettings.annotationWidth }),
   onCommit: (annotation) => store.dispatch({ type: "ANNOTATION_COMMIT", annotation })
 });
 
@@ -85,13 +88,47 @@ function render(state) {
     });
     annotationCanvas.render(state.annotations.present);
   }
-  renderPins(pinLayer, state.pins, (action) => store.dispatch(action), DEFAULT_SETTINGS, state.history, { actions: pinActions });
+  renderPins(pinLayer, state.pins, (action) => store.dispatch(action), activeSettings, state.history, { actions: pinActions });
   for (const button of toolbar.querySelectorAll("[data-tool]")) {
     button.setAttribute("aria-pressed", String(button.dataset.tool === state.activeTool));
   }
 }
 
 store.subscribe(render);
+
+function applySettings(settings) {
+  document.documentElement.dataset.theme = settings.theme;
+  desktopScene.style.setProperty("--capture-mask-opacity", String(settings.maskOpacity / 100));
+  desktopScene.style.setProperty("--capture-border-width", `${settings.borderWidth}px`);
+  pinLayer.style.setProperty("--pin-shadow", settings.pinShadow ? "0 16px 42px rgba(0,0,0,.34)" : "none");
+  pinLayer.style.setProperty("--pin-opacity", String(settings.pinOpacity / 100));
+}
+
+const settingsDialog = document.querySelector("#settingsDialog");
+const settingsView = createSettingsView({
+  dialog: settingsDialog,
+  settings: activeSettings,
+  onChange(next) {
+    activeSettings = saveSettings(window.localStorage, next);
+    applySettings(activeSettings);
+    render(store.getState());
+  },
+  onReset(next) {
+    resetSettings(window.localStorage);
+    activeSettings = saveSettings(window.localStorage, next);
+    applySettings(activeSettings);
+    render(store.getState());
+  },
+  onClose() { store.dispatch({ type: "SETTINGS_CLOSE" }); }
+});
+
+document.querySelector("#trayLauncher").addEventListener("dblclick", () => {
+  store.dispatch({ type: "SETTINGS_OPEN" });
+  settingsView.open();
+});
+applySettings(activeSettings);
+render(store.getState());
+if (recoveryNotice) store.dispatch({ type: "TOAST_SHOW", message: recoveryNotice });
 
 toolbar.addEventListener("click", (event) => {
   const tool = event.target.closest("[data-tool]");

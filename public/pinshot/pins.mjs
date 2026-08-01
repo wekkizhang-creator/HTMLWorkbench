@@ -153,7 +153,7 @@ export function renderPins(container, pins, dispatch, settings, history = [], { 
     card.classList.toggle("is-collapsed", Boolean(pin.collapsed));
     Object.assign(card.style, {
       left: `${pin.x}px`, top: `${pin.y}px`, width: `${pin.width}px`, height: `${pin.height}px`,
-      opacity: String(pin.opacity / 100), transform: `scale(${pin.scale}) rotate(${pin.rotation}deg)`
+      "--card-opacity": String(pin.opacity / 100), transform: `scale(${pin.scale}) rotate(${pin.rotation}deg)`
     });
     const image = documentRef.createElement("img");
     image.alt = `\u8d34\u56fe ${index + 1}`;
