@@ -88,3 +88,35 @@ test("canvas keeps CSS selection dimensions while using a device-pixel backing s
     Object.defineProperty(globalThis, "devicePixelRatio", { configurable: true, value: originalRatio });
   }
 });
+
+test("opening a second text editor commits the first draft exactly once", () => {
+  const originalDocument = globalThis.document;
+  const inputs = [];
+  globalThis.document = {
+    createElement() {
+      const listeners = new Map();
+      const input = {
+        style: {}, value: "", removed: false, remove() { this.removed = true; }, focus() {}, setAttribute() {},
+        addEventListener(type, listener) { listeners.set(type, listener); },
+        emit(type, event = {}) { listeners.get(type)?.(event); }
+      };
+      inputs.push(input);
+      return input;
+    }
+  };
+  try {
+    const { canvas, committed } = createHarness({ tool: "text" });
+    canvas.emit("pointerdown", { clientX: 120, clientY: 70 });
+    inputs[0].value = "第一条";
+    canvas.emit("pointerdown", { clientX: 130, clientY: 80 });
+    assert.equal(inputs.length, 2);
+    assert.deepEqual(committed.map((item) => item.text), ["第一条"]);
+    inputs[0].emit("blur");
+    assert.deepEqual(committed.map((item) => item.text), ["第一条"]);
+    inputs[1].value = "第二条";
+    inputs[1].emit("keydown", { key: "Enter" });
+    assert.deepEqual(committed.map((item) => item.text), ["第一条", "第二条"]);
+  } finally {
+    globalThis.document = originalDocument;
+  }
+});

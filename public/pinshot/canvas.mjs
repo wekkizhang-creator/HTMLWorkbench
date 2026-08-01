@@ -66,6 +66,7 @@ function localPoint(event, selection) {
 export function createCanvasController({ canvas, getSelection, getTool, getStyle, onCommit }) {
   let gesture = null;
   let input = null;
+  let activeTextInput = null;
   let committed = [];
 
   function draw(items = committed) {
@@ -73,15 +74,20 @@ export function createCanvasController({ canvas, getSelection, getTool, getStyle
   }
 
 
-  function finishText(point) {
-    const value = input?.value.trim();
-    input?.remove();
-    input = null;
-    if (value) onCommit(annotationFromGesture("text", point, point, { ...getStyle(), text: value }));
+  function finalizeActiveTextInput(commit = true, expected = activeTextInput) {
+    const editor = expected;
+    if (!editor || editor.finalized) return;
+    editor.finalized = true;
+    if (activeTextInput === editor) activeTextInput = null;
+    const value = editor.element.value.trim();
+    editor.element.remove();
+    if (commit && value) {
+      onCommit(annotationFromGesture("text", editor.point, editor.point, { ...getStyle(), text: value }));
+    }
   }
 
   function startText(selection, point) {
-    input?.remove();
+    finalizeActiveTextInput();
     input = document.createElement("input");
     input.type = "text";
     input.className = "annotation-text-input";
@@ -91,11 +97,13 @@ export function createCanvasController({ canvas, getSelection, getTool, getStyle
     input.style.top = `${selection.y + point.y}px`;
     canvas.parentElement.append(input);
     input.focus();
+    const editor = { element: input, point, finalized: false };
     input.addEventListener("keydown", (keyEvent) => {
-      if (keyEvent.key === "Enter") finishText(point);
-      if (keyEvent.key === "Escape") { input.remove(); input = null; }
+      if (keyEvent.key === "Enter") finalizeActiveTextInput(true, editor);
+      if (keyEvent.key === "Escape") finalizeActiveTextInput(false, editor);
     });
-    input.addEventListener("blur", () => finishText(point), { once: true });
+    input.addEventListener("blur", () => finalizeActiveTextInput(true, editor), { once: true });
+    activeTextInput = editor;
   }
 
   function pointerDown(event) {
@@ -147,7 +155,7 @@ export function createCanvasController({ canvas, getSelection, getTool, getStyle
       draw();
     },
     destroy() {
-      input?.remove();
+      finalizeActiveTextInput(false);
       canvas.removeEventListener("pointerdown", pointerDown);
       canvas.removeEventListener("pointermove", pointerMove);
       canvas.removeEventListener("pointerup", pointerUp);
