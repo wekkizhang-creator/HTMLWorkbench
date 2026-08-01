@@ -47,7 +47,7 @@ export function reducer(state, action) {
     }
     case "HISTORY_RESTORE": {
       const item = state.history.find((historyItem) => historyItem.id === action.id);
-      return item ? { ...state, mode: "selected", selection: { ...item.selection }, restoredHistory: item } : state;
+      return item ? { ...state, mode: "selected", selection: { ...item.selection }, restoredHistory: item, capture: { ...state.capture, active: true, freeOnly: false, autoCopy: false, pendingAutoCopy: false, preview: { ...item.selection }, magnifier: null, toolbarPosition: null } } : state;
     }
     case "TRAY_TOGGLE": return { ...state, trayOpen: !state.trayOpen };
     case "TOAST_SHOW": return { ...state, toast: action.message };

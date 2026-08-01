@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 
 const files = [
   "server.js",
@@ -18,6 +18,24 @@ const files = [
   "lib/zip.mjs",
   "scripts/check.mjs"
 ];
+
+const pinshotFiles = [
+  "public/pinshot/app.mjs",
+  "public/pinshot/state.mjs",
+  "public/pinshot/geometry.mjs",
+  "public/pinshot/capture.mjs",
+  "public/pinshot/annotations.mjs",
+  "public/pinshot/canvas.mjs",
+  "public/pinshot/scene.mjs",
+  "public/pinshot/output.mjs",
+  "public/pinshot/pins.mjs",
+  "public/pinshot/settings.mjs",
+  "public/pinshot/settings-view.mjs",
+  "public/pinshot/keyboard.mjs"
+];
+if (existsSync("public/pinshot")) {
+  files.push(...pinshotFiles);
+}
 
 for (const file of files) {
   const result = spawnSync(process.execPath, ["--check", file], {

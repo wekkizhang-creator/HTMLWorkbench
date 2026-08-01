@@ -1,6 +1,9 @@
 import { drawDesktopScene } from "./scene.mjs";
 
 export const COPY_FAILURE_MESSAGE = "\u590d\u5236\u5931\u8d25\uff0c\u8bf7\u4f7f\u7528\u4fdd\u5b58";
+export const COPY_SUCCESS_MESSAGE = "\u5df2\u590d\u5236\u5230\u526a\u8d34\u677f";
+export const SAVE_SUCCESS_MESSAGE = "\u622a\u56fe\u5df2\u4fdd\u5b58";
+
 
 export function buildDownloadName(date = new Date()) {
   const digits = (value) => String(value).padStart(2, "0");
@@ -87,7 +90,7 @@ export function createOutputRunner({
         }
       });
       closeCapture();
-      store.dispatch({ type: "TOAST_SHOW", message: command === "save" ? "Screenshot saved" : "Image copied to clipboard" });
+      store.dispatch({ type: "TOAST_SHOW", message: command === "save" ? SAVE_SUCCESS_MESSAGE : COPY_SUCCESS_MESSAGE });
       return { ok: true, blob };
     } catch (error) {
       store.dispatch({ type: "TOAST_SHOW", message: command === "save" ? (error instanceof Error ? error.message : "Output failed; use Save") : COPY_FAILURE_MESSAGE });

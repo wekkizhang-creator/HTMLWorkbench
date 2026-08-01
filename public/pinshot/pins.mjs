@@ -19,6 +19,39 @@ export function createPin(input = {}) {
   };
 }
 
+export function resolvePinSource(state) {
+  const restored = state.restoredHistory;
+  if (restored) return { selection: restored.selection, imageBlob: restored.imageBlob };
+  if (state.selection) return { selection: state.selection, imageBlob: null };
+  const latest = state.history?.[0];
+  return latest ? { selection: latest.selection, imageBlob: latest.imageBlob } : null;
+}
+
+function normalizedRotation(rotation) {
+  return ((Math.round(Number(rotation || 0) / 90) * 90) % 360 + 360) % 360;
+}
+
+export function getPinDisplayGeometry(pin) {
+  const scale = Number(pin.scale || 1);
+  const baseWidth = Math.max(0, Number(pin.width || 0) * scale);
+  const baseHeight = Math.max(0, Number(pin.height || 0) * scale);
+  const rotation = normalizedRotation(pin.rotation);
+  if (rotation === 90) return { width: baseHeight, height: baseWidth, translateX: baseHeight, translateY: 0 };
+  if (rotation === 180) return { width: baseWidth, height: baseHeight, translateX: baseWidth, translateY: baseHeight };
+  if (rotation === 270) return { width: baseHeight, height: baseWidth, translateX: 0, translateY: baseWidth };
+  return { width: baseWidth, height: baseHeight, translateX: 0, translateY: 0 };
+}
+
+export function clampPinPosition(pin, viewport) {
+  if (!Number.isFinite(viewport?.width) || !Number.isFinite(viewport?.height)) return { ...pin };
+  const geometry = getPinDisplayGeometry(pin);
+  return {
+    ...pin,
+    x: clamp(Number(pin.x || 0), 0, Math.max(0, viewport.width - geometry.width)),
+    y: clamp(Number(pin.y || 0), 0, Math.max(0, viewport.height - geometry.height))
+  };
+}
+
 export function scalePin(pin, direction) {
   return { ...pin, scale: clamp(Number((pin.scale + direction * 0.1).toFixed(1)), 0.2, 4) };
 }
@@ -77,8 +110,19 @@ function revokeUrls(container) {
   urlRegistry.delete(container);
 }
 
-function updatePin(dispatch, pin, patch) {
-  dispatch({ type: "PIN_UPDATE", id: pin.id, patch });
+function containerViewport(container) {
+  const width = Number(container?.clientWidth);
+  const height = Number(container?.clientHeight);
+  return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 ? { width, height } : null;
+}
+
+function updatePin(dispatch, pin, patch, viewport) {
+  const candidate = { ...pin, ...patch };
+  const bounded = clampPinPosition(candidate, viewport);
+  const nextPatch = { ...patch };
+  if (bounded.x !== candidate.x) nextPatch.x = bounded.x;
+  if (bounded.y !== candidate.y) nextPatch.y = bounded.y;
+  dispatch({ type: "PIN_UPDATE", id: pin.id, patch: nextPatch });
 }
 
 function configuredAction(settings, name) {
@@ -95,12 +139,13 @@ function createControl(documentRef, label, onClick) {
   return button;
 }
 
-function attachPinEvents(card, pin, dispatch, settings) {
+function attachPinEvents(card, pin, dispatch, settings, viewport) {
   let drag = null;
   card.addEventListener("pointerdown", (event) => {
+    if (event.target?.closest?.("button, a, input, select, textarea")) return;
     if (event.button === 1 && configuredAction(settings, "resetPin") === "MiddleClick") {
       event.preventDefault();
-      updatePin(dispatch, pin, { scale: 1, opacity: 100, rotation: 0 });
+      updatePin(dispatch, pin, { scale: 1, opacity: 100, rotation: 0 }, viewport);
       return;
     }
     if (event.button !== 0 || pin.locked) return;
@@ -109,7 +154,7 @@ function attachPinEvents(card, pin, dispatch, settings) {
   });
   card.addEventListener("pointermove", (event) => {
     if (!drag || drag.pointerId !== event.pointerId || pin.locked) return;
-    updatePin(dispatch, pin, { x: pin.x + event.clientX - drag.x, y: pin.y + event.clientY - drag.y });
+    updatePin(dispatch, pin, { x: pin.x + event.clientX - drag.x, y: pin.y + event.clientY - drag.y }, viewport);
   });
   const clearDrag = () => { drag = null; };
   card.addEventListener("pointerup", clearDrag);
@@ -118,20 +163,22 @@ function attachPinEvents(card, pin, dispatch, settings) {
     const direction = event.deltaY < 0 ? 1 : -1;
     if (event.ctrlKey && configuredAction(settings, "pinOpacity") === "Ctrl+Wheel") {
       event.preventDefault();
-      updatePin(dispatch, pin, { opacity: changePinOpacity(pin, direction).opacity });
+      updatePin(dispatch, pin, { opacity: changePinOpacity(pin, direction).opacity }, viewport);
     } else if (!event.ctrlKey && configuredAction(settings, "pinScale") === "Wheel") {
       event.preventDefault();
-      updatePin(dispatch, pin, { scale: scalePin(pin, direction).scale });
+      updatePin(dispatch, pin, { scale: scalePin(pin, direction).scale }, viewport);
     }
   });
   card.addEventListener("dblclick", (event) => {
+    if (event.target?.closest?.("button, a, input, select, textarea")) return;
     if (event.shiftKey && configuredAction(settings, "quickThumbnail") === "Shift+DoubleClick") {
-      updatePin(dispatch, pin, { collapsed: !pin.collapsed });
+      updatePin(dispatch, pin, { collapsed: !pin.collapsed }, viewport);
     } else if (!event.shiftKey && configuredAction(settings, "closePin") === "DoubleClick") {
       dispatch({ type: "PIN_REMOVE", id: pin.id });
     }
   });
   card.addEventListener("contextmenu", (event) => {
+    if (event.target?.closest?.("button, a, input, select, textarea")) return;
     if (event.shiftKey && configuredAction(settings, "copyText") === "Shift+RightClick") {
       event.preventDefault();
       dispatch({ type: "TOAST_SHOW", message: pin.recognizedText ? "\u5df2\u590d\u5236\u8bc6\u522b\u6587\u5b57" : "\u672a\u8bc6\u522b\u5230\u53ef\u590d\u5236\u6587\u5b57" });
@@ -146,20 +193,28 @@ export function renderPins(container, pins, dispatch, settings, history = [], { 
   container.replaceChildren();
   revokeUrls(container);
   const documentRef = container.ownerDocument || document;
+  const viewport = containerViewport(container);
   for (let index = 0; index < pins.length; index += 1) {
     const pin = pins[index];
     if (pin.hidden) continue;
+    const geometry = getPinDisplayGeometry(pin);
     const card = documentRef.createElement("article");
     card.className = "pin-card";
     card.dataset.pinId = pin.id;
+    card.setAttribute("aria-label", `\u8d34\u56fe ${index + 1}`);
     card.classList.toggle("is-locked", Boolean(pin.locked));
     card.classList.toggle("is-collapsed", Boolean(pin.collapsed));
     Object.assign(card.style, {
       left: `${pin.x}px`, top: `${pin.y}px`, width: `${pin.width}px`, height: `${pin.height}px`,
-      "--card-opacity": String(pin.opacity / 100), transform: `scale(${pin.scale}) rotate(${pin.rotation}deg)`
     });
+    card.style.setProperty("--card-opacity", String(pin.opacity / 100));
+    card.style.setProperty("--pin-translate-x", `${geometry.translateX}px`);
+    card.style.setProperty("--pin-translate-y", `${geometry.translateY}px`);
+    card.style.setProperty("--pin-scale", String(pin.scale));
+    card.style.setProperty("--pin-rotation", `${normalizedRotation(pin.rotation)}deg`);
     const image = documentRef.createElement("img");
     image.alt = `\u8d34\u56fe ${index + 1}`;
+    image.draggable = false;
     image.src = pin.imageUrl || rememberUrl(container, pin.imageBlob);
     card.append(image);
     const toolbar = documentRef.createElement("div");
@@ -177,14 +232,14 @@ export function renderPins(container, pins, dispatch, settings, history = [], { 
     };
 
     toolbar.append(
-      createControl(documentRef, "\u9501\u5b9a", () => updatePin(dispatch, pin, { locked: !pin.locked })),
-      createControl(documentRef, "\u65cb\u8f6c", () => updatePin(dispatch, pin, { rotation: rotatePin(pin).rotation })),
+      createControl(documentRef, "\u9501\u5b9a", () => updatePin(dispatch, pin, { locked: !pin.locked }, viewport)),
+      createControl(documentRef, "\u65cb\u8f6c", () => updatePin(dispatch, pin, { rotation: rotatePin(pin).rotation }, viewport)),
       createControl(documentRef, "\u590d\u5236", () => runAction("copy")),
       createControl(documentRef, "\u4fdd\u5b58", () => runAction("save")),
       createControl(documentRef, "\u5173\u95ed", () => dispatch({ type: "PIN_REMOVE", id: pin.id }))
     );
     card.append(toolbar);
-    attachPinEvents(card, pin, dispatch, settings);
+    attachPinEvents(card, pin, dispatch, settings, viewport);
     container.append(card);
   }
   const historyStrip = documentRef.querySelector?.("#historyStrip");

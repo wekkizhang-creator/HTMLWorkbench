@@ -50,6 +50,9 @@ test("history restore reopens the stored selection and group actions remain immu
   assert.equal(state.mode, "selected");
   assert.deepEqual(state.selection, { x: 8, y: 16, width: 320, height: 180 });
   assert.equal(state.restoredHistory.id, "shot-1");
+  assert.equal(state.capture.active, true);
+  assert.deepEqual(state.capture.preview, { x: 8, y: 16, width: 320, height: 180 });
+  assert.equal(state.capture.toolbarPosition, null);
 });
 
 test("annotation reducer actions retain immutable undo and redo snapshots", () => {

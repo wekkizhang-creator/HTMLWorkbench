@@ -45,6 +45,7 @@ test("failed copy preserves the active capture session", async () => {
   const dispatched = [];
   const state = selectedState();
   const selection = state.selection;
+
   const annotations = state.annotations;
   const runOutput = createOutputRunner({
     store: { getState: () => state, dispatch: (action) => dispatched.push(action) },
@@ -62,6 +63,30 @@ test("failed copy preserves the active capture session", async () => {
   assert.equal(state.annotations, annotations);
   assert.deepEqual(dispatched.map((action) => action.type), ["TOAST_SHOW"]);
   assert.match(dispatched[0].message, /\u590d\u5236\u5931\u8d25.*\u8bf7\u4f7f\u7528\u4fdd\u5b58/);
+});
+
+test("successful output announces copy and save in Chinese", async () => {
+  const cases = [
+    ["copy", "\u5df2\u590d\u5236\u5230\u526a\u8d34\u677f", { copyCanvas: async () => ({ type: "image/png" }) }],
+    ["save", "\u622a\u56fe\u5df2\u4fdd\u5b58", { downloadCanvas: async () => ({ type: "image/png" }) }]
+  ];
+
+  for (const [command, message, output] of cases) {
+    const dispatched = [];
+    const runOutput = createOutputRunner({
+      store: { getState: selectedState, dispatch: (action) => dispatched.push(action) },
+      annotationCanvas: { id: "annotations" },
+      getViewport: () => ({ width: 1440, height: 900 }),
+      createComposite: () => ({ id: "composite" }),
+      output
+    });
+
+    const result = await runOutput(command);
+
+    assert.equal(result.ok, true);
+    assert.equal(dispatched.at(-1).type, "TOAST_SHOW");
+    assert.equal(dispatched.at(-1).message, message);
+  }
 });
 
 test("composite uses the full DPR annotation backing store before scaling", () => {

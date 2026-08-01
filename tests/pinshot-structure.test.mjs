@@ -22,3 +22,33 @@ test("every icon-only button has an accessible Chinese label", async () => {
   assert.ok(iconButtons.length >= 8);
   for (const button of iconButtons) assert.match(button, /aria-label="[^\"]*[\u4e00-\u9fff][^\"]*"/);
 });
+
+test("hidden PinShot layers override component display declarations", async () => {
+  const css = await readFile("public/pinshot/styles.css", "utf8");
+  const html = await readFile("public/pinshot.html", "utf8");
+  assert.match(css, /\[hidden\]\s*\{\s*display:\s*none\s*!important;\s*\}/);
+  assert.match(css, /\.annotation-toolbar\s*\{[^}]*display:\s*flex;/);
+  assert.match(html, /<link rel="stylesheet" href="\/pinshot\/styles\.css\?v=20260802">/);
+  assert.match(css, /\.magnifier\s*\{[^}]*display:\s*var\(/);
+});
+
+test("tray menu has a fixed, clickable popover layer beside the launcher", async () => {
+  const css = await readFile("public/pinshot/styles.css", "utf8");
+  const html = await readFile("public/pinshot.html", "utf8");
+  assert.match(html, /id="trayMenu" class="tray-menu"/);
+  assert.match(css, /\.tray-menu\s*\{[^}]*position:\s*fixed;[^}]*right:\s*22px;[^}]*bottom:\s*74px;[^}]*z-index:\s*50;[^}]*background:/);
+  assert.match(css, /\.tray-menu button\s*\{[^}]*cursor:\s*pointer;/);
+});
+
+test("settings dialog assigns vertical overflow only to its active panel", async () => {
+  const css = await readFile("public/pinshot/styles.css", "utf8");
+  assert.match(css, /\.settings-dialog\s*\{[^}]*display:\s*grid;[^}]*grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)\s+auto;[^}]*overflow:\s*hidden;/);
+  assert.match(css, /\.settings-layout\s*\{[^}]*height:\s*auto;[^}]*min-height:\s*0;/);
+  assert.match(css, /\.settings-nav\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/);
+  assert.match(css, /\.settings-panel\s*\{[^}]*min-height:\s*0;[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/);
+});
+
+test("closed settings dialog remains hidden despite its grid display", async () => {
+  const css = await readFile("public/pinshot/styles.css", "utf8");
+  assert.match(css, /\.settings-dialog:not\(\[open\]\)\s*\{\s*display:\s*none;\s*\}/);
+});

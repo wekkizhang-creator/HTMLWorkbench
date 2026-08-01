@@ -207,18 +207,50 @@ test("HEAD returns selected static headers without a response body", async () =>
   });
 });
 
-test("PinShot page and browser module are served without admin authentication", async () => {
+test("PinShot static assets are publicly served with cache validators and complete syntax coverage", async () => {
+  const checkScript = await fs.readFile("scripts/check.mjs", "utf8");
+  const pinshotFiles = [
+    "public/pinshot/app.mjs",
+    "public/pinshot/state.mjs",
+    "public/pinshot/geometry.mjs",
+    "public/pinshot/capture.mjs",
+    "public/pinshot/annotations.mjs",
+    "public/pinshot/canvas.mjs",
+    "public/pinshot/scene.mjs",
+    "public/pinshot/output.mjs",
+    "public/pinshot/pins.mjs",
+    "public/pinshot/settings.mjs",
+    "public/pinshot/settings-view.mjs",
+    "public/pinshot/keyboard.mjs"
+  ];
+  for (const file of pinshotFiles) {
+    assert.match(checkScript, new RegExp(`"${file.replaceAll(".", "\\.")}"`));
+  }
+
   await withServer(async (origin) => {
     const page = await request(origin, "/pinshot.html");
     assert.equal(page.status, 200);
     assert.match(page.headers["content-type"], /^text\/html; charset=utf-8$/);
     assert.match(page.body.toString("utf8"), /id="pinshotApp"/);
     assert.match(page.body.toString("utf8"), /\u8fd9\u662f\u4ea4\u4e92\u539f\u578b\uff0c\u4e0d\u4f1a\u8bfb\u53d6\u771f\u5b9e\u7cfb\u7edf\u5c4f\u5e55/);
+    assert.ok(page.headers.etag);
+
+    const styles = await request(origin, "/pinshot/styles.css");
+    assert.equal(styles.status, 200);
+    assert.equal(styles.headers["content-type"], "text/css; charset=utf-8");
+    assert.ok(styles.headers.etag);
 
     const module = await request(origin, "/pinshot/app.mjs");
     assert.equal(module.status, 200);
     assert.equal(module.headers["content-type"], "text/javascript; charset=utf-8");
+    assert.ok(module.headers.etag);
     assert.match(module.body.toString("utf8"), /data-pinshot-ready/);
+
+    const moduleHead = await request(origin, "/pinshot/app.mjs", { method: "HEAD" });
+    assert.equal(moduleHead.status, 200);
+    assert.equal(moduleHead.headers["content-type"], "text/javascript; charset=utf-8");
+    assert.ok(moduleHead.headers.etag);
+    assert.equal(moduleHead.body.length, 0);
   });
 });
 

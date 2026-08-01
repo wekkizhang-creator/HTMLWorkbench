@@ -1,11 +1,11 @@
-import { createCaptureController } from "./capture.mjs";
+import { createCaptureController, getToolbarPosition } from "./capture.mjs";
 import { createCanvasController } from "./canvas.mjs";
 import { DEFAULT_SETTINGS, loadSettings, resetSettings, saveSettings } from "./settings.mjs";
 import { createSettingsView } from "./settings-view.mjs";
 import { createEscapeHandler, createKeyboardRouter } from "./keyboard.mjs";
 import { createInitialState, createStore } from "./state.mjs";
 import { canvasToBlob, createCompositeCanvas, createOutputRunner } from "./output.mjs";
-import { createPinActions, renderPins } from "./pins.mjs";
+import { createPinActions, renderPins, resolvePinSource } from "./pins.mjs";
 
 const app = document.querySelector("#pinshotApp");
 if (!app) throw new Error("PinShot root is missing");
@@ -67,12 +67,10 @@ function nextId(prefix) {
   return globalThis.crypto?.randomUUID?.() || `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-async function createPinFromSelection() {
+async function createPinFromSelection(source) {
   const state = store.getState();
-  const restored = state.restoredHistory;
-  const selection = restored?.selection || state.selection;
-  if (!selection) return;
-  let blob = restored?.imageBlob;
+  const { selection, imageBlob } = source;
+  let blob = imageBlob;
   try {
     if (!blob) {
       const composite = createCompositeCanvas(canvas, selection, { width: desktopScene.clientWidth, height: desktopScene.clientHeight }, document);
@@ -108,7 +106,7 @@ function render(state) {
     Object.assign(sizeLabel.style, { left: `${displayRect.x}px`, top: `${Math.max(0, displayRect.y - 30)}px` });
   }
   if (captureView.magnifier) Object.assign(magnifier.style, { left: `${captureView.magnifier.x}px`, top: `${captureView.magnifier.y}px` });
-  if (captureView.toolbarPosition) Object.assign(toolbar.style, { left: `${captureView.toolbarPosition.x}px`, top: `${captureView.toolbarPosition.y}px` });
+  Object.assign(toolbar.style, captureView.toolbarPosition ? { left: `${captureView.toolbarPosition.x}px`, top: `${captureView.toolbarPosition.y}px` } : { left: "", top: "" });
   historyStrip.hidden = state.history.length === 0;
   trayMenu.hidden = !state.trayOpen;
   trayLauncher.setAttribute("aria-expanded", String(state.trayOpen));
@@ -134,6 +132,9 @@ store.subscribe((state, action) => {
   if (action.type === "SELECTION_SET" && state.capture.pendingAutoCopy) {
     store.dispatch({ type: "CAPTURE_AUTO_COPY_CONSUME" });
     void runOutput("copy");
+  }
+  if (action.type === "HISTORY_RESTORE" && state.selection) {
+    store.dispatch({ type: "CAPTURE_TOOLBAR_SET", position: getToolbarPosition(state.selection, toolbar, { width: desktopScene.clientWidth, height: desktopScene.clientHeight }) });
   }
 });
 
@@ -196,8 +197,9 @@ function execute(command) {
   if (command === "captureAndCopy") { capture.start({ autoCopy: true }); return true; }
   if (command === "customCapture") { capture.start({ freeOnly: true }); return true; }
   if (command === "paste") {
-    if (!state.selection) return false;
-    void createPinFromSelection();
+    const pinSource = resolvePinSource(state);
+    if (!pinSource) return false;
+    void createPinFromSelection(pinSource);
     return true;
   }
   if (command === "togglePins") { store.dispatch({ type: "PIN_GROUP_TOGGLE", group: state.activePinGroup }); return true; }

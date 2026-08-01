@@ -172,3 +172,9 @@ SERVER_APP_DIR=/opt/html-workbench
 SERVER_BRANCH=owncnd_codex/html
 SERVER_REPO_URL=https://github.com/wekkizhang-creator/HTMLWorkbench.git
 ```
+
+## PinShot 原型
+
+本地启动后可访问 [PinShot 截图工具原型](/pinshot.html)。
+
+交互能力、键盘操作与浏览器原型边界见 [PinShot 原型说明](docs/pinshot-prototype.md)。该入口不影响 HTMLWorkbench 的上传、认证或部署流程。

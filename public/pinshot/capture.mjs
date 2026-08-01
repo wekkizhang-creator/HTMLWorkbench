@@ -1,5 +1,11 @@
 import { clampRect, findCandidate, normalizeRect, placeToolbar, resizeRect } from "./geometry.mjs";
 
+export function getToolbarPosition(selection, toolbar, bounds) {
+  const measured = toolbar.getBoundingClientRect();
+  const size = { width: measured.width || toolbar.offsetWidth || 200, height: measured.height || toolbar.offsetHeight || 48 };
+  return placeToolbar(selection, size, bounds);
+}
+
 export function createCaptureController(elements, store, getSettings) {
   let drag = null;
   let hoveredCandidate = null;
@@ -45,9 +51,7 @@ export function createCaptureController(elements, store, getSettings) {
     const rect = drag.kind === "candidate" ? drag.rect : drag.kind === "resize" ? resizeRect(drag.origin, drag.handle, cursor, bounds()) : clampRect(normalizeRect(drag.start, cursor), bounds());
     drag = null;
     store.dispatch({ type: "SELECTION_SET", rect });
-    const measured = elements.toolbar.getBoundingClientRect();
-    const size = { width: measured.width || elements.toolbar.offsetWidth || 200, height: measured.height || elements.toolbar.offsetHeight || 48 };
-    store.dispatch({ type: "CAPTURE_TOOLBAR_SET", position: placeToolbar(rect, size, bounds()) });
+    store.dispatch({ type: "CAPTURE_TOOLBAR_SET", position: getToolbarPosition(rect, elements.toolbar, bounds()) });
   }
 
   function cancel() {
