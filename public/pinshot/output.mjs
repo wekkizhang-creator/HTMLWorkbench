@@ -1,5 +1,7 @@
 import { drawDesktopScene } from "./scene.mjs";
 
+const COPY_FAILURE_MESSAGE = "\u590d\u5236\u5931\u8d25\uff0c\u8bf7\u4f7f\u7528\u4fdd\u5b58";
+
 export function buildDownloadName(date = new Date()) {
   const digits = (value) => String(value).padStart(2, "0");
   return `PinShot-${date.getUTCFullYear()}${digits(date.getUTCMonth() + 1)}${digits(date.getUTCDate())}-${digits(date.getUTCHours())}${digits(date.getUTCMinutes())}${digits(date.getUTCSeconds())}.png`;
@@ -15,9 +17,13 @@ export function canvasToBlob(canvas) {
 export async function copyCanvas(canvas, clipboard = navigator.clipboard) {
   const blob = await canvasToBlob(canvas);
   if (!clipboard?.write || typeof ClipboardItem === "undefined") {
-    throw new Error("浏览器未开放图片剪贴板权限，请使用保存");
+    throw new Error(COPY_FAILURE_MESSAGE);
   }
-  await clipboard.write([new ClipboardItem({ "image/png": blob })]);
+  try {
+    await clipboard.write([new ClipboardItem({ "image/png": blob })]);
+  } catch {
+    throw new Error(COPY_FAILURE_MESSAGE);
+  }
   return blob;
 }
 
@@ -41,7 +47,7 @@ export function createCompositeCanvas(annotationCanvas, selection, viewport, doc
   canvas.height = Math.round(selection.height);
   const ctx = canvas.getContext("2d");
   drawScene(ctx, { ...viewport, offsetX: selection.x, offsetY: selection.y });
-  ctx.drawImage(annotationCanvas, 0, 0, selection.width, selection.height, 0, 0, canvas.width, canvas.height);
+  ctx.drawImage(annotationCanvas, 0, 0, annotationCanvas.width, annotationCanvas.height, 0, 0, canvas.width, canvas.height);
   return canvas;
 
 }
@@ -84,7 +90,7 @@ export function createOutputRunner({
       store.dispatch({ type: "TOAST_SHOW", message: command === "save" ? "Screenshot saved" : "Image copied to clipboard" });
       return { ok: true, blob };
     } catch (error) {
-      store.dispatch({ type: "TOAST_SHOW", message: error instanceof Error ? error.message : "Output failed; use Save" });
+      store.dispatch({ type: "TOAST_SHOW", message: command === "save" ? (error instanceof Error ? error.message : "Output failed; use Save") : COPY_FAILURE_MESSAGE });
       return { ok: false, error };
     }
   };

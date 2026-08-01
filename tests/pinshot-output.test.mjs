@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildDownloadName, canvasToBlob, createOutputRunner } from "../public/pinshot/output.mjs";
+import { buildDownloadName, canvasToBlob, copyCanvas, createCompositeCanvas, createOutputRunner } from "../public/pinshot/output.mjs";
 
 test("download names are deterministic PNG names", () => {
   assert.equal(buildDownloadName(new Date("2026-08-01T08:09:07Z")), "PinShot-20260801-080907.png");
@@ -61,5 +61,55 @@ test("failed copy preserves the active capture session", async () => {
   assert.equal(state.selection, selection);
   assert.equal(state.annotations, annotations);
   assert.deepEqual(dispatched.map((action) => action.type), ["TOAST_SHOW"]);
-  assert.match(dispatched[0].message, /save/);
+  assert.match(dispatched[0].message, /\u590d\u5236\u5931\u8d25.*\u8bf7\u4f7f\u7528\u4fdd\u5b58/);
+});
+
+test("composite uses the full DPR annotation backing store before scaling", () => {
+  const drawImageCalls = [];
+  const composite = {
+    getContext: () => ({ drawImage: (...args) => drawImageCalls.push(args) })
+  };
+  const annotationCanvas = { width: 640, height: 360 };
+
+  createCompositeCanvas(
+    annotationCanvas,
+    { x: 12, y: 24, width: 320, height: 180 },
+    { width: 1440, height: 900 },
+    { createElement: () => composite },
+    () => {}
+  );
+
+  assert.deepEqual(drawImageCalls[0], [annotationCanvas, 0, 0, 640, 360, 0, 0, 320, 180]);
+});
+
+test("clipboard denials and unavailable APIs use the Chinese save fallback without ending capture", async () => {
+  const blobCanvas = { toBlob(callback) { callback({ type: "image/png" }); } };
+  await assert.rejects(copyCanvas(blobCanvas, {}), /\u590d\u5236\u5931\u8d25.*\u8bf7\u4f7f\u7528\u4fdd\u5b58/);
+
+  const dispatched = [];
+  const state = selectedState();
+  const selection = state.selection;
+  const annotations = state.annotations;
+  const runOutput = createOutputRunner({
+    store: { getState: () => state, dispatch: (action) => dispatched.push(action) },
+    annotationCanvas: { id: "annotations" },
+    getViewport: () => ({ width: 1440, height: 900 }),
+    createComposite: () => ({ id: "composite" }),
+    output: {
+      copyCanvas: async () => {
+        const error = new Error("clipboard access denied");
+        error.name = "NotAllowedError";
+        throw error;
+      }
+    }
+  });
+
+  const result = await runOutput("copy");
+
+  assert.equal(result.ok, false);
+  assert.equal(state.mode, "annotating");
+  assert.equal(state.selection, selection);
+  assert.equal(state.annotations, annotations);
+  assert.deepEqual(dispatched.map((action) => action.type), ["TOAST_SHOW"]);
+  assert.match(dispatched[0].message, /\u590d\u5236\u5931\u8d25.*\u8bf7\u4f7f\u7528\u4fdd\u5b58/);
 });
