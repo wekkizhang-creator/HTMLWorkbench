@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { changePinOpacity, createPin, renderPins, scalePin, togglePinCollapse, togglePinLock } from "../public/pinshot/pins.mjs";
+import { changePinOpacity, createPin, createPinActions, renderPins, scalePin, togglePinCollapse, togglePinLock } from "../public/pinshot/pins.mjs";
 
 test("pin scale remains between 0.2 and 4", () => {
   const pin = createPin({ id: "p", width: 320, height: 180 });
@@ -105,4 +105,53 @@ test("Blob URLs are revoked only after their previous nodes are removed", () => 
   } finally {
     globalThis.URL = originalUrl;
   }
+});
+test("pin copy and save controls use injected Blob actions and preserve the pin on failure", async () => {
+  const { pinLayer } = createFakeDom();
+  const blob = new Blob(["pin"], { type: "image/png" });
+  const calls = [];
+  const dispatched = [];
+  renderPins(pinLayer, [createPin({ id: "p", imageBlob: blob })], (action) => dispatched.push(action), { mouseActions }, [], {
+    actions: {
+      copy: async (value) => calls.push(["copy", value]),
+      save: async (value) => calls.push(["save", value])
+    }
+  });
+  const controls = pinLayer.children[0].children[1].children;
+  controls[2].emit("click");
+  controls[3].emit("click");
+  await new Promise(setImmediate);
+  assert.deepEqual(calls, [["copy", blob], ["save", blob]]);
+
+  renderPins(pinLayer, [createPin({ id: "p", imageBlob: blob })], (action) => dispatched.push(action), { mouseActions }, [], {
+    actions: { copy: async () => { throw new Error("denied"); }, save: async () => { throw new Error("disk full"); } }
+  });
+  const failedControls = pinLayer.children[0].children[1].children;
+  failedControls[2].emit("click");
+  failedControls[3].emit("click");
+  await new Promise(setImmediate);
+  assert.equal(dispatched.filter((action) => action.type === "PIN_REMOVE").length, 0);
+  assert.match(dispatched.find((action) => action.type === "TOAST_SHOW").message, /\u590d\u5236\u5931\u8d25.*\u8bf7\u4f7f\u7528\u4fdd\u5b58/);
+});
+
+test("injected pin actions write image clipboard data and always revoke download URLs", async () => {
+  const blob = { type: "image/png" };
+  const writes = [];
+  const downloads = [];
+  const revoked = [];
+  class TestClipboardItem { constructor(value) { this.value = value; } }
+  const actions = createPinActions({
+    clipboard: { write: async (items) => writes.push(items) },
+    ClipboardItemRef: TestClipboardItem,
+    documentRef: { createElement: () => ({ click() { downloads.push("clicked"); } }) },
+    URLRef: { createObjectURL: () => "blob:download", revokeObjectURL: (url) => revoked.push(url) },
+    now: () => new Date("2026-08-01T08:09:07Z")
+  });
+  await actions.copy(blob);
+  await actions.save(blob);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0][0].value["image/png"], blob);
+  assert.deepEqual(downloads, ["clicked"]);
+  assert.deepEqual(revoked, ["blob:download"]);
+  await assert.rejects(createPinActions({ clipboard: {}, ClipboardItemRef: TestClipboardItem }).copy(blob), /\u590d\u5236\u5931\u8d25.*\u8bf7\u4f7f\u7528\u4fdd\u5b58/);
 });

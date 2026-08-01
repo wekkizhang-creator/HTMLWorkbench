@@ -1,3 +1,5 @@
+import { buildDownloadName, COPY_FAILURE_MESSAGE } from "./output.mjs";
+
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 export function createPin(input = {}) {
@@ -32,6 +34,31 @@ export function togglePinLock(pin) {
 export function togglePinCollapse(pin) {
   return { ...pin, collapsed: !pin.collapsed };
 }
+export function createPinActions({ clipboard, ClipboardItemRef, documentRef, URLRef, now = () => new Date() } = {}) {
+  return {
+    async copy(blob) {
+      if (!blob || !clipboard?.write || typeof ClipboardItemRef !== "function") throw new Error(COPY_FAILURE_MESSAGE);
+      try {
+        await clipboard.write([new ClipboardItemRef({ "image/png": blob })]);
+      } catch {
+        throw new Error(COPY_FAILURE_MESSAGE);
+      }
+    },
+    async save(blob) {
+      if (!blob || !documentRef?.createElement || !URLRef?.createObjectURL || !URLRef?.revokeObjectURL) throw new Error("\u65e0\u6cd5\u4fdd\u5b58\u8d34\u56fe");
+      const link = documentRef.createElement("a");
+      const url = URLRef.createObjectURL(blob);
+      link.download = buildDownloadName(now());
+      link.href = url;
+      try {
+        link.click();
+      } finally {
+        URLRef.revokeObjectURL(url);
+      }
+    }
+  };
+}
+
 
 
 const urlRegistry = new WeakMap();
@@ -112,7 +139,7 @@ function attachPinEvents(card, pin, dispatch, settings) {
   });
 }
 
-export function renderPins(container, pins, dispatch, settings, history = []) {
+export function renderPins(container, pins, dispatch, settings, history = [], { actions } = {}) {
   container.replaceChildren();
   revokeUrls(container);
   const documentRef = container.ownerDocument || document;
@@ -134,11 +161,23 @@ export function renderPins(container, pins, dispatch, settings, history = []) {
     card.append(image);
     const toolbar = documentRef.createElement("div");
     toolbar.className = "pin-card__toolbar";
+    const runAction = (name) => {
+      const operation = actions?.[name];
+      if (!operation) {
+        dispatch({ type: "TOAST_SHOW", message: name === "copy" ? COPY_FAILURE_MESSAGE : "\u65e0\u6cd5\u4fdd\u5b58\u8d34\u56fe" });
+        return;
+      }
+      void operation(pin.imageBlob).catch((error) => dispatch({
+        type: "TOAST_SHOW",
+        message: name === "copy" ? COPY_FAILURE_MESSAGE : (error instanceof Error ? error.message : "\u65e0\u6cd5\u4fdd\u5b58\u8d34\u56fe")
+      }));
+    };
+
     toolbar.append(
       createControl(documentRef, "\u9501\u5b9a", () => updatePin(dispatch, pin, { locked: !pin.locked })),
       createControl(documentRef, "\u65cb\u8f6c", () => updatePin(dispatch, pin, { rotation: rotatePin(pin).rotation })),
-      createControl(documentRef, "\u590d\u5236", () => dispatch({ type: "TOAST_SHOW", message: "\u8d34\u56fe\u5df2\u590d\u5236" })),
-      createControl(documentRef, "\u4fdd\u5b58", () => dispatch({ type: "TOAST_SHOW", message: "\u8d34\u56fe\u5df2\u4fdd\u5b58" })),
+      createControl(documentRef, "\u590d\u5236", () => runAction("copy")),
+      createControl(documentRef, "\u4fdd\u5b58", () => runAction("save")),
       createControl(documentRef, "\u5173\u95ed", () => dispatch({ type: "PIN_REMOVE", id: pin.id }))
     );
     card.append(toolbar);

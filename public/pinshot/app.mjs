@@ -3,7 +3,7 @@ import { createCanvasController } from "./canvas.mjs";
 import { DEFAULT_SETTINGS } from "./settings.mjs";
 import { createInitialState, createStore } from "./state.mjs";
 import { canvasToBlob, createCompositeCanvas, createOutputRunner } from "./output.mjs";
-import { renderPins } from "./pins.mjs";
+import { createPinActions, renderPins } from "./pins.mjs";
 
 const app = document.querySelector("#pinshotApp");
 if (!app) throw new Error("PinShot root is missing");
@@ -15,6 +15,13 @@ const canvas = document.querySelector("#annotationCanvas");
 const toolbar = document.querySelector("#annotationToolbar");
 const toast = document.querySelector("#toast");
 const store = createStore(createInitialState());
+const pinActions = createPinActions({
+  clipboard: navigator.clipboard,
+  ClipboardItemRef: globalThis.ClipboardItem,
+  documentRef: document,
+  URLRef: globalThis.URL
+});
+
 const pinLayer = document.querySelector("#pinLayer");
 const capture = createCaptureController({
   root: desktopScene,
@@ -78,7 +85,7 @@ function render(state) {
     });
     annotationCanvas.render(state.annotations.present);
   }
-  renderPins(pinLayer, state.pins, (action) => store.dispatch(action), DEFAULT_SETTINGS, state.history);
+  renderPins(pinLayer, state.pins, (action) => store.dispatch(action), DEFAULT_SETTINGS, state.history, { actions: pinActions });
   for (const button of toolbar.querySelectorAll("[data-tool]")) {
     button.setAttribute("aria-pressed", String(button.dataset.tool === state.activeTool));
   }

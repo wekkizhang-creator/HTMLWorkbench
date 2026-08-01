@@ -26,3 +26,9 @@ test("pin rendering is not repeated for every annotation tool button", async () 
   const source = await readFile("public/pinshot/app.mjs", "utf8");
   assert.doesNotMatch(source, /for \(const button of toolbar\.querySelectorAll\("\[data-tool\]"\)\) \{\s*renderPins/s);
 });
+test("application injects browser clipboard and download dependencies into pin rendering", async () => {
+  const source = await readFile("public/pinshot/app.mjs", "utf8");
+  assert.match(source, /createPinActions/);
+  assert.match(source, /clipboard:\s*navigator\.clipboard/);
+  assert.match(source, /actions:\s*pinActions/);
+});

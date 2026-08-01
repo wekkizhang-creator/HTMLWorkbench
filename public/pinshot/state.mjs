@@ -20,14 +20,14 @@ export function createInitialState(overrides = {}) {
 
 export function reducer(state, action) {
   switch (action.type) {
-    case "CAPTURE_START": return { ...state, mode: "capturing", selection: null, trayOpen: false };
+    case "CAPTURE_START": return { ...state, mode: "capturing", selection: null, restoredHistory: null, trayOpen: false };
     case "CAPTURE_CANCEL": return { ...state, mode: "idle", selection: null, annotations: { past: [], present: [], future: [] } };
-    case "SELECTION_SET": return { ...state, mode: "selected", selection: { ...action.rect } };
+    case "SELECTION_SET": return { ...state, mode: "selected", selection: { ...action.rect }, restoredHistory: null };
     case "TOOL_SELECT": return { ...state, mode: "annotating", activeTool: action.tool };
     case "ANNOTATION_COMMIT": return { ...state, mode: "annotating", annotations: commitAnnotation(state.annotations, action.annotation) };
     case "ANNOTATION_UNDO": return { ...state, annotations: undoAnnotation(state.annotations) };
     case "ANNOTATION_REDO": return { ...state, annotations: redoAnnotation(state.annotations) };
-    case "PIN_CREATE": return { ...state, mode: "idle", pins: [...state.pins, createPin(action.pin)], selection: null };
+    case "PIN_CREATE": return { ...state, mode: "idle", pins: [...state.pins, createPin(action.pin)], selection: null, restoredHistory: null };
     case "PIN_UPDATE": return { ...state, pins: state.pins.map((pin) => pin.id === action.id ? { ...pin, ...action.patch } : pin) };
     case "PIN_REMOVE": return { ...state, pins: state.pins.filter((pin) => pin.id !== action.id) };
     case "HISTORY_ADD": return { ...state, history: [action.item, ...state.history.filter((item) => item.id !== action.item.id)].slice(0, 8) };

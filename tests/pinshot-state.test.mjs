@@ -64,3 +64,13 @@ test("annotation reducer actions retain immutable undo and redo snapshots", () =
   state = reducer(state, { type: "ANNOTATION_REDO" });
   assert.deepEqual(state.annotations.present.map((item) => item.id), ["note-1"]);
 });
+test("fresh capture and pin creation clear a previously restored history item", () => {
+  const restored = { id: "old", selection: { x: 1, y: 2, width: 30, height: 20 }, imageBlob: { type: "image/png" } };
+  let state = createInitialState({ restoredHistory: restored });
+  state = reducer(state, { type: "CAPTURE_START" });
+  assert.equal(state.restoredHistory, null);
+  state = reducer({ ...state, restoredHistory: restored }, { type: "SELECTION_SET", rect: { x: 10, y: 10, width: 40, height: 30 } });
+  assert.equal(state.restoredHistory, null);
+  state = reducer({ ...state, restoredHistory: restored }, { type: "PIN_CREATE", pin: { id: "new-pin" } });
+  assert.equal(state.restoredHistory, null);
+});

@@ -1,6 +1,6 @@
 import { drawDesktopScene } from "./scene.mjs";
 
-const COPY_FAILURE_MESSAGE = "\u590d\u5236\u5931\u8d25\uff0c\u8bf7\u4f7f\u7528\u4fdd\u5b58";
+export const COPY_FAILURE_MESSAGE = "\u590d\u5236\u5931\u8d25\uff0c\u8bf7\u4f7f\u7528\u4fdd\u5b58";
 
 export function buildDownloadName(date = new Date()) {
   const digits = (value) => String(value).padStart(2, "0");
