@@ -60,4 +60,19 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .annotation-text-input { position: absolute; z-index: 37; min-width: 132px; min-height: 36px; padding: 4px 8px; border: 2px solid var(--blue); border-radius: 6px; background: var(--white); color: var(--text); }
 @media (prefers-reduced-motion: reduce) {
   .toast { transition: none; }
+  .pin-card__toolbar { transition: none; }
 }
+.pin-layer { position: absolute; inset: 0; z-index: 22; pointer-events: none; }
+.pin-card { position: absolute; display: grid; overflow: hidden; border: 0; border-radius: 10px; background: var(--graphite); box-shadow: 0 16px 42px rgba(0,0,0,.34); transform-origin: top left; pointer-events: auto; touch-action: none; }
+.pin-card > img { display: block; width: 100%; height: 100%; object-fit: contain; background: var(--graphite); user-select: none; }
+.pin-card__toolbar { position: absolute; right: 6px; top: 6px; display: flex; gap: 4px; padding: 4px; border-radius: 9px; background: rgba(23,26,31,.88); opacity: 0; transform: translateY(-4px); transition: opacity .16s ease, transform .16s ease; }
+.pin-card:hover .pin-card__toolbar, .pin-card:focus-within .pin-card__toolbar { opacity: 1; transform: translateY(0); }
+.pin-card__toolbar button { min-width: 36px; min-height: 36px; border: 0; border-radius: 6px; background: transparent; color: var(--white); cursor: pointer; }
+.pin-card__toolbar button:hover { background: rgba(76,141,255,.26); }
+.pin-card.is-locked { outline: 2px solid #2FC79A; }
+.pin-card.is-locked::after { content: "Locked"; position: absolute; left: 8px; top: 8px; color: #2FC79A; font-size: 12px; font-weight: 700; }
+.pin-card.is-collapsed { height: 42px !important; }
+.pin-card.is-collapsed > img { visibility: hidden; }
+.history-strip { position: absolute; left: 50%; bottom: 92px; z-index: 24; display: flex; max-width: min(80vw, 640px); gap: 8px; padding: 8px; transform: translateX(-50%); border-radius: 12px; background: rgba(23,26,31,.86); box-shadow: 0 12px 30px rgba(0,0,0,.28); }
+.history-strip button { width: 62px; height: 62px; padding: 0; overflow: hidden; border: 0; border-radius: 7px; background: var(--graphite); cursor: pointer; }
+.history-strip img { display: block; width: 100%; height: 100%; object-fit: cover; }

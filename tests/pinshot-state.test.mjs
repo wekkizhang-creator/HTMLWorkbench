@@ -32,6 +32,26 @@ test("history keeps the newest eight captures", () => {
   assert.deepEqual(state.history.map((item) => item.id), ["shot-9","shot-8","shot-7","shot-6","shot-5","shot-4","shot-3","shot-2"]);
 });
 
+test("history restore reopens the stored selection and group actions remain immutable", () => {
+  let state = createInitialState({
+    pins: [
+      { id: "default-pin", group: "default", hidden: false },
+      { id: "reference-pin", group: "reference", hidden: false }
+    ],
+    history: [{ id: "shot-1", selection: { x: 8, y: 16, width: 320, height: 180 }, imageBlob: { type: "image/png" } }]
+  });
+
+  state = reducer(state, { type: "PIN_GROUP_TOGGLE", group: "default" });
+  assert.equal(state.pins[0].hidden, true);
+  assert.equal(state.pins[1].hidden, false);
+  state = reducer(state, { type: "PIN_GROUP_CYCLE" });
+  assert.equal(state.activePinGroup, "reference");
+  state = reducer(state, { type: "HISTORY_RESTORE", id: "shot-1" });
+  assert.equal(state.mode, "selected");
+  assert.deepEqual(state.selection, { x: 8, y: 16, width: 320, height: 180 });
+  assert.equal(state.restoredHistory.id, "shot-1");
+});
+
 test("annotation reducer actions retain immutable undo and redo snapshots", () => {
   let state = createInitialState();
   const initialHistory = state.annotations;
