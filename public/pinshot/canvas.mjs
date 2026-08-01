@@ -7,7 +7,10 @@ function line(ctx, points) {
 }
 
 export function renderAnnotations(ctx, annotations) {
+  ctx.save();
+  ctx.setTransform?.(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.restore();
   for (const item of annotations) {
     ctx.save();
     ctx.strokeStyle = item.color;
@@ -63,6 +66,12 @@ function localPoint(event, selection) {
 export function createCanvasController({ canvas, getSelection, getTool, getStyle, onCommit }) {
   let gesture = null;
   let input = null;
+  let committed = [];
+
+  function draw(items = committed) {
+    renderAnnotations(canvas.getContext("2d"), items);
+  }
+
 
   function finishText(point) {
     const value = input?.value.trim();
@@ -71,14 +80,15 @@ export function createCanvasController({ canvas, getSelection, getTool, getStyle
     if (value) onCommit(annotationFromGesture("text", point, point, { ...getStyle(), text: value }));
   }
 
-  function startText(event, point) {
+  function startText(selection, point) {
     input?.remove();
     input = document.createElement("input");
     input.type = "text";
     input.className = "annotation-text-input";
     input.setAttribute("aria-label", "输入标注文字");
-    input.style.left = `${point.x}px`;
-    input.style.top = `${point.y}px`;
+    input.setAttribute("aria-label", "输入标注文字");
+    input.style.left = `${selection.x + point.x}px`;
+    input.style.top = `${selection.y + point.y}px`;
     canvas.parentElement.append(input);
     input.focus();
     input.addEventListener("keydown", (keyEvent) => {
@@ -94,7 +104,7 @@ export function createCanvasController({ canvas, getSelection, getTool, getStyle
     const tool = getTool();
     if (!selection || tool === "select") return;
     const point = localPoint(event, selection);
-    if (tool === "text") return startText(event, point);
+    if (tool === "text") return startText(selection, point);
     gesture = { tool, start: point, points: [point] };
     canvas.setPointerCapture?.(event.pointerId);
   }
@@ -103,6 +113,8 @@ export function createCanvasController({ canvas, getSelection, getTool, getStyle
     if (!gesture) return;
     gesture.end = localPoint(event, getSelection());
     if (gesture.tool === "pen" || gesture.tool === "highlight") gesture.points.push(gesture.end);
+    const preview = annotationFromGesture(gesture.tool, gesture.start, gesture.end, { ...getStyle(), points: gesture.points });
+    draw([...committed, preview]);
   }
 
   function pointerUp(event) {
@@ -112,20 +124,27 @@ export function createCanvasController({ canvas, getSelection, getTool, getStyle
     gesture = null;
     const annotation = annotationFromGesture(tool, start, end, { ...getStyle(), points, id: crypto.randomUUID() });
     onCommit(annotation);
+    draw();
   }
 
   canvas.addEventListener("pointerdown", pointerDown);
   canvas.addEventListener("pointermove", pointerMove);
   canvas.addEventListener("pointerup", pointerUp);
-  canvas.addEventListener("pointercancel", () => { gesture = null; });
+  canvas.addEventListener("pointercancel", () => { gesture = null; draw(); });
 
   return {
     render(annotations) {
       const selection = getSelection();
       if (!selection) return;
-      canvas.width = Math.max(1, Math.round(selection.width));
-      canvas.height = Math.max(1, Math.round(selection.height));
-      renderAnnotations(canvas.getContext("2d"), annotations);
+      const ratio = Math.max(1, globalThis.devicePixelRatio || 1);
+      canvas.style.width = `${selection.width}px`;
+      canvas.style.height = `${selection.height}px`;
+      canvas.width = Math.max(1, Math.round(selection.width * ratio));
+      canvas.height = Math.max(1, Math.round(selection.height * ratio));
+      const context = canvas.getContext("2d");
+      context.setTransform?.(ratio, 0, 0, ratio, 0, 0);
+      committed = [...annotations];
+      draw();
     },
     destroy() {
       input?.remove();

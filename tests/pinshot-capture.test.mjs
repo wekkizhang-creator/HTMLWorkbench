@@ -85,3 +85,14 @@ test("resize handles keep a 10 pixel visual while exposing a 36 pixel hit target
   assert.match(css, /\.selection-box \[data-handle\] \{[^}]*width: 36px;[^}]*height: 36px;[^}]*background: transparent;/s);
   assert.match(css, /\.selection-box \[data-handle\]::after \{[^}]*width: 10px;[^}]*height: 10px;/s);
 });
+test("toolbar pointer lifecycle does not replace an active selection", () => {
+  const { capture, elements, store } = createHarness();
+  capture.start();
+  elements.overlay.emit("pointerdown", { clientX: 500, clientY: 500 });
+  elements.overlay.emit("pointerup", { clientX: 600, clientY: 580 });
+  const selection = store.getState().selection;
+  const toolbar = {};
+  elements.overlay.emit("pointerdown", { clientX: 700, clientY: 600, target: { closest: (selector) => selector === "#annotationToolbar" ? toolbar : null } });
+  elements.overlay.emit("pointerup", { clientX: 700, clientY: 600, target: { closest: (selector) => selector === "#annotationToolbar" ? toolbar : null } });
+  assert.deepEqual(store.getState().selection, selection);
+});

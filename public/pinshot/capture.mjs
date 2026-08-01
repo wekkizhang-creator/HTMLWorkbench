@@ -23,6 +23,9 @@ export function createCaptureController(elements, store, getSettings) {
   function begin(event) {
     if (event.button !== 0) return;
     const handle = event.target.closest?.("[data-handle]")?.dataset.handle;
+    if (!handle && (event.target.closest?.("#annotationToolbar") || event.target.closest?.("#annotationCanvas") || event.target.closest?.(".annotation-text-input"))) {
+      return;
+    }
     const cursor = point(event);
     const candidate = hoveredCandidate || findCandidate(cursor, candidates);
     const origin = store.getState().selection || previewRect;
