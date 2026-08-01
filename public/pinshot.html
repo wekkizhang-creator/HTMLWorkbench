@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark light">
+    <title>PinShot 截贴 · PC 截图工具原型</title>
+    <link rel="stylesheet" href="/pinshot/styles.css">
+  </head>
+  <body>
+    <main id="pinshotApp" class="pinshot-app" data-mode="idle">
+      <section id="desktopScene" class="desktop-scene" aria-label="模拟桌面">
+        <div class="desktop-wallpaper" aria-hidden="true"></div>
+        <article class="mock-window mock-window--notes" data-window-candidate="notes">
+          <header><span>项目备忘</span><span aria-hidden="true">— □ ×</span></header>
+          <h1>发布前检查</h1>
+          <p>确认首页文案、快捷键与导出流程。</p>
+        </article>
+        <article class="mock-window mock-window--browser" data-window-candidate="browser">
+          <header><span>设计评审</span><span aria-hidden="true">— □ ×</span></header>
+          <div class="browser-card"><strong>PinShot</strong><span>更轻、更快的截图与贴图体验</span></div>
+        </article>
+
+        <div id="pinLayer" class="pin-layer" aria-label="桌面贴图"></div>
+        <div id="captureOverlay" class="capture-overlay" hidden>
+          <div id="selectionBox" class="selection-box" hidden></div>
+          <canvas id="annotationCanvas" aria-label="截图标注画布"></canvas>
+          <output id="selectionSize" class="selection-size" hidden></output>
+          <div id="magnifier" class="magnifier" hidden aria-hidden="true"></div>
+          <div id="annotationToolbar" class="annotation-toolbar" role="toolbar" aria-label="截图标注工具" hidden></div>
+        </div>
+
+        <aside id="historyStrip" class="history-strip" aria-label="最近截图" hidden></aside>
+        <dialog id="settingsDialog" class="settings-dialog" aria-labelledby="settingsTitle"></dialog>
+        <nav id="trayMenu" class="tray-menu" aria-label="PinShot 托盘菜单" hidden></nav>
+      </section>
+
+      <button id="captureLauncher" class="capture-launcher" type="button" title="开始截图 F1">
+        <span aria-hidden="true">⌗</span><span>开始截图</span><kbd>F1</kbd>
+      </button>
+      <button id="trayLauncher" class="tray-launcher" type="button" aria-label="打开 PinShot 托盘菜单" title="打开托盘菜单">P</button>
+      <p class="prototype-notice">这是交互原型，不会读取真实系统屏幕、注册全局快捷键或创建原生置顶窗口。</p>
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </main>
+    <script type="module" src="/pinshot/app.mjs"></script>
+  </body>
+</html>

@@ -17,6 +17,7 @@ const MIME_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
   [".html", "text/html; charset=utf-8"],
   [".js", "text/javascript; charset=utf-8"],
+  [".mjs", "text/javascript; charset=utf-8"],
   [".json", "application/json; charset=utf-8"],
   [".png", "image/png"],
   [".svg", "image/svg+xml; charset=utf-8"],
@@ -25,7 +26,7 @@ const MIME_TYPES = new Map([
 
 const gzipAsync = promisify(gzip);
 const staticAssetCache = new Map();
-const COMPRESSIBLE_EXTENSIONS = new Set([".css", ".html", ".js", ".json", ".svg", ".txt"]);
+const COMPRESSIBLE_EXTENSIONS = new Set([".css", ".html", ".js", ".mjs", ".json", ".svg", ".txt"]);
 
 loadLocalEnv();
 

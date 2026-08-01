@@ -206,3 +206,18 @@ test("HEAD returns selected static headers without a response body", async () =>
     assert.equal(response.body.length, 0);
   });
 });
+
+test("PinShot page and browser module are served without admin authentication", async () => {
+  await withServer(async (origin) => {
+    const page = await request(origin, "/pinshot.html");
+    assert.equal(page.status, 200);
+    assert.match(page.headers["content-type"], /^text\/html; charset=utf-8$/);
+    assert.match(page.body.toString("utf8"), /id="pinshotApp"/);
+    assert.match(page.body.toString("utf8"), /\u8fd9\u662f\u4ea4\u4e92\u539f\u578b\uff0c\u4e0d\u4f1a\u8bfb\u53d6\u771f\u5b9e\u7cfb\u7edf\u5c4f\u5e55/);
+
+    const module = await request(origin, "/pinshot/app.mjs");
+    assert.equal(module.status, 200);
+    assert.equal(module.headers["content-type"], "text/javascript; charset=utf-8");
+    assert.match(module.body.toString("utf8"), /data-pinshot-ready/);
+  });
+});

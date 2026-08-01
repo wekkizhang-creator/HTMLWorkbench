@@ -1,0 +1,38 @@
+:root {
+  color-scheme: dark;
+  --graphite: #171A1F;
+  --blue: #4C8DFF;
+  --mint: #2FC79A;
+  --coral: #F25F5C;
+  --surface: #F6F7F9;
+  --white: #FFFFFF;
+  --text: #20242B;
+  --muted: #69707D;
+  --desktop-w: 1440;
+  --desktop-h: 900;
+  font-family: "Segoe UI Variable", "Microsoft YaHei UI", system-ui, sans-serif;
+  font-size: 14px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 960px; min-height: 100vh; overflow: hidden; background: #0d0f12; }
+button, input, select { font: inherit; }
+button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+.pinshot-app { position: relative; width: 100vw; height: 100vh; color: var(--white); overflow: hidden; }
+.desktop-scene { position: absolute; inset: 0; overflow: hidden; background: #1c2430; }
+.desktop-wallpaper { position: absolute; inset: 0; background: radial-gradient(circle at 72% 18%, #344d69 0, transparent 33%), linear-gradient(145deg, #10151d, #243345); }
+.mock-window { position: absolute; overflow: hidden; border: 1px solid rgba(255,255,255,.14); border-radius: 12px; background: rgba(246,247,249,.96); color: var(--text); box-shadow: 0 28px 80px rgba(0,0,0,.28); }
+.mock-window header { display: flex; justify-content: space-between; padding: 12px 16px; background: #e9edf2; color: var(--muted); }
+.mock-window--notes { left: 7vw; top: 16vh; width: 32vw; min-width: 360px; height: 54vh; padding: 0 28px; }
+.mock-window--notes h1 { margin-top: 56px; font-size: 32px; }
+.mock-window--browser { right: 6vw; top: 10vh; width: 49vw; height: 66vh; }
+.browser-card { display: grid; place-content: center; gap: 12px; height: calc(100% - 44px); text-align: center; background: linear-gradient(135deg,#f5f8ff,#e3fbf3); }
+.browser-card strong { font-size: 58px; letter-spacing: -.04em; }
+.capture-launcher { position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 18px; border: 1px solid rgba(255,255,255,.2); border-radius: 999px; background: rgba(23,26,31,.9); color: var(--white); }
+.capture-launcher kbd { color: #aeb8c6; }
+.tray-launcher { position: fixed; right: 22px; bottom: 22px; width: 42px; height: 42px; border: 0; border-radius: 12px; background: var(--blue); color: var(--white); font-weight: 800; }
+.prototype-notice { position: fixed; left: 20px; bottom: 18px; margin: 0; max-width: 440px; color: rgba(255,255,255,.68); font-size: 12px; }
+.toast { position: fixed; top: 24px; left: 50%; z-index: 100; transform: translate(-50%,-20px); opacity: 0; padding: 10px 14px; border-radius: 9px; background: var(--graphite); box-shadow: 0 16px 40px rgba(0,0,0,.35); transition: .18s ease; }
+.toast.is-visible { transform: translate(-50%,0); opacity: 1; }
