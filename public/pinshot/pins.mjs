@@ -52,6 +52,20 @@ export function clampPinPosition(pin, viewport) {
   };
 }
 
+export function fitPinToViewport(pin, viewport, maxSize = Infinity) {
+  if (!Number.isFinite(viewport?.width) || !Number.isFinite(viewport?.height) || viewport.width <= 0 || viewport.height <= 0) return { ...pin };
+  const baseGeometry = getPinDisplayGeometry({ ...pin, scale: 1 });
+  const finiteMaxSize = Number(maxSize);
+  const limits = [
+    baseGeometry.width > 0 ? viewport.width / baseGeometry.width : Infinity,
+    baseGeometry.height > 0 ? viewport.height / baseGeometry.height : Infinity,
+    Number.isFinite(finiteMaxSize) && finiteMaxSize > 0 && baseGeometry.width > 0 ? finiteMaxSize / baseGeometry.width : Infinity,
+    Number.isFinite(finiteMaxSize) && finiteMaxSize > 0 && baseGeometry.height > 0 ? finiteMaxSize / baseGeometry.height : Infinity
+  ];
+  const scale = Math.min(Number(pin.scale || 1), ...limits);
+  return clampPinPosition({ ...pin, scale: Number.isFinite(scale) && scale > 0 ? scale : Number(pin.scale || 1) }, viewport);
+}
+
 export function scalePin(pin, direction) {
   return { ...pin, scale: clamp(Number((pin.scale + direction * 0.1).toFixed(1)), 0.2, 4) };
 }

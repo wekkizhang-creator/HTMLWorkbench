@@ -235,22 +235,24 @@ test("PinShot static assets are publicly served with cache validators and comple
     assert.match(page.body.toString("utf8"), /\u8fd9\u662f\u4ea4\u4e92\u539f\u578b\uff0c\u4e0d\u4f1a\u8bfb\u53d6\u771f\u5b9e\u7cfb\u7edf\u5c4f\u5e55/);
     assert.ok(page.headers.etag);
 
-    const styles = await request(origin, "/pinshot/styles.css");
-    assert.equal(styles.status, 200);
-    assert.equal(styles.headers["content-type"], "text/css; charset=utf-8");
-    assert.ok(styles.headers.etag);
+    const staticAssets = [
+      ["/pinshot/styles.css", "text/css; charset=utf-8"],
+      ...pinshotFiles.map((file) => [`/${file.replace(/^public\//, "")}`, "text/javascript; charset=utf-8"])
+    ];
+    for (const [pathname, contentType] of staticAssets) {
+      const response = await request(origin, pathname);
+      assert.equal(response.status, 200, `${pathname} GET status`);
+      assert.equal(response.headers["content-type"], contentType, `${pathname} GET content type`);
+      assert.ok(response.headers.etag, `${pathname} GET ETag`);
+      assert.ok(response.body.length > 0, `${pathname} GET body`);
 
-    const module = await request(origin, "/pinshot/app.mjs");
-    assert.equal(module.status, 200);
-    assert.equal(module.headers["content-type"], "text/javascript; charset=utf-8");
-    assert.ok(module.headers.etag);
-    assert.match(module.body.toString("utf8"), /data-pinshot-ready/);
-
-    const moduleHead = await request(origin, "/pinshot/app.mjs", { method: "HEAD" });
-    assert.equal(moduleHead.status, 200);
-    assert.equal(moduleHead.headers["content-type"], "text/javascript; charset=utf-8");
-    assert.ok(moduleHead.headers.etag);
-    assert.equal(moduleHead.body.length, 0);
+      const head = await request(origin, pathname, { method: "HEAD" });
+      assert.equal(head.status, 200, `${pathname} HEAD status`);
+      assert.equal(head.headers["content-type"], contentType, `${pathname} HEAD content type`);
+      assert.equal(head.headers.etag, response.headers.etag, `${pathname} HEAD ETag`);
+      assert.ok(Number(head.headers["content-length"]) > 0, `${pathname} HEAD content length`);
+      assert.equal(head.body.length, 0, `${pathname} HEAD body`);
+    }
   });
 });
 

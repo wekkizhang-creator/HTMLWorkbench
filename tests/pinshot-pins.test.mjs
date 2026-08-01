@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { changePinOpacity, clampPinPosition, createPin, createPinActions, getPinDisplayGeometry, renderPins, resolvePinSource, scalePin, togglePinCollapse, togglePinLock } from "../public/pinshot/pins.mjs";
+import { changePinOpacity, clampPinPosition, createPin, createPinActions, fitPinToViewport, getPinDisplayGeometry, renderPins, resolvePinSource, scalePin, togglePinCollapse, togglePinLock } from "../public/pinshot/pins.mjs";
 
 test("pin scale remains between 0.2 and 4", () => {
   const pin = createPin({ id: "p", width: 320, height: 180 });
@@ -91,6 +91,22 @@ test("rotated scaled pin geometry keeps state coordinates at the visible top-lef
     clampPinPosition({ ...pin, rotation: 90 }, { width: 800, height: 600 }),
     { ...pin, rotation: 90, x: 650, y: 300 }
   );
+});
+
+test("initial pin geometry scales and clamps full-screen captures inside the pin viewport", () => {
+  const viewport = { width: 1920, height: 1080 };
+  const fullScreen = fitPinToViewport(createPin({ x: 80, y: 80, width: 1920, height: 1080 }), viewport, 12000);
+  assert.deepEqual(fullScreen, createPin({ x: 0, y: 0, width: 1920, height: 1080 }));
+
+  const oversized = fitPinToViewport(createPin({ x: 80, y: 80, width: 3840, height: 2160 }), viewport, 12000);
+  assert.equal(oversized.scale, 0.5);
+  assert.equal(oversized.x, 0);
+  assert.equal(oversized.y, 0);
+  assert.deepEqual(getPinDisplayGeometry(oversized), { width: 1920, height: 1080, translateX: 0, translateY: 0 });
+
+  const settingsCapped = fitPinToViewport(createPin({ width: 16000, height: 8000 }), { width: 20000, height: 20000 }, 12000);
+  assert.equal(settingsCapped.scale, 0.75);
+  assert.deepEqual(getPinDisplayGeometry(settingsCapped), { width: 12000, height: 6000, translateX: 0, translateY: 0 });
 });
 
 test("rendered pin cards have position-independent Chinese names", () => {
