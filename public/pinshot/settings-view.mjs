@@ -58,6 +58,7 @@ export function createSettingsView({ dialog, settings, onChange = () => {}, onRe
     current = clone(sanitizeSettings(next));
     writeFields(dialog, current);
     updatePreviews(dialog, current);
+  dialog.querySelectorAll("[data-conflict-for]").forEach((element) => element.setAttribute("role", "status"));
     (reset ? onReset : onChange)(clone(current));
   }
 

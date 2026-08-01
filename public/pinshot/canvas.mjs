@@ -141,6 +141,8 @@ export function createCanvasController({ canvas, getSelection, getTool, getStyle
   canvas.addEventListener("pointercancel", () => { gesture = null; draw(); });
 
   return {
+    hasActiveTextInput: () => Boolean(activeTextInput),
+    cancelActiveTextInput: () => finalizeActiveTextInput(false),
     render(annotations) {
       const selection = getSelection();
       if (!selection) return;

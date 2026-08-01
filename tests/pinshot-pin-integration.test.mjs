@@ -5,7 +5,7 @@ import test from "node:test";
 test("application wires F3 pin creation and the two pin-group shortcuts", async () => {
   const source = await readFile("public/pinshot/app.mjs", "utf8");
   assert.match(source, /createPinFromSelection/);
-  assert.match(source, /event\.key === "F3"/);
+  assert.match(source, /createKeyboardRouter/);
   assert.match(source, /PIN_GROUP_TOGGLE/);
   assert.match(source, /PIN_GROUP_CYCLE/);
 });

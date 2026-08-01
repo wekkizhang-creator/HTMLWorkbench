@@ -63,6 +63,13 @@ test("annotation reducer actions retain immutable undo and redo snapshots", () =
   assert.deepEqual(state.annotations.present, []);
   state = reducer(state, { type: "ANNOTATION_REDO" });
   assert.deepEqual(state.annotations.present.map((item) => item.id), ["note-1"]);
+
+test("clearing an annotation tool keeps the capture active without a selected tool", () => {
+  const state = reducer(createInitialState({ mode: "annotating", activeTool: "pen", selection: { x: 1, y: 1, width: 2, height: 2 } }), { type: "TOOL_CLEAR" });
+  assert.equal(state.mode, "selected");
+  assert.equal(state.activeTool, "select");
+  assert.deepEqual(state.selection, { x: 1, y: 1, width: 2, height: 2 });
+});
 });
 test("fresh capture and pin creation clear a previously restored history item", () => {
   const restored = { id: "old", selection: { x: 1, y: 2, width: 30, height: 20 }, imageBlob: { type: "image/png" } };

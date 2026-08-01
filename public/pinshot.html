@@ -32,7 +32,7 @@
           <canvas id="annotationCanvas" aria-label="截图标注画布"></canvas>
           <output id="selectionSize" class="selection-size" hidden></output>
           <div id="magnifier" class="magnifier" hidden aria-hidden="true"></div>
-          <div id="annotationToolbar" class="annotation-toolbar" role="toolbar" aria-label="截图标注工具" hidden>
+          <div id="annotationToolbar" class="annotation-toolbar" role="toolbar" aria-label="截图标注工具" data-tooltip="标注工具栏" hidden>
             <button type="button" data-icon-only data-tool="select" title="选择 V" aria-label="选择" aria-pressed="true">选择</button>
             <button type="button" data-icon-only data-tool="rectangle" title="矩形 R" aria-label="矩形" aria-pressed="false">矩形</button>
             <button type="button" data-icon-only data-tool="arrow" title="箭头 A" aria-label="箭头" aria-pressed="false">箭头</button>
@@ -64,13 +64,13 @@
             <section class="settings-panel" data-settings-panel="output" hidden><h2 tabindex="-1">输出</h2><label>输出格式<select data-setting="outputFormat"><option value="png">PNG</option><option value="jpg">JPG</option></select></label><label>输出目录<input data-setting="outputDirectory"></label><div class="settings-preview">实时输出预览</div><button type="button" data-reset-group>恢复本组默认</button></section></div>
           <footer class="settings-footer"><button type="button" data-reset-all>恢复全部默认</button></footer>
         </dialog>
-        <nav id="trayMenu" class="tray-menu" aria-label="PinShot 托盘菜单" hidden></nav>
+        <nav id="trayMenu" class="tray-menu" aria-label="PinShot 托盘菜单" hidden><button type="button" data-open-settings>设置</button></nav>
       </section>
 
       <button id="captureLauncher" class="capture-launcher" type="button" title="开始截图 F1">
         <span aria-hidden="true">⌗</span><span>开始截图</span><kbd>F1</kbd>
       </button>
-      <button id="trayLauncher" class="tray-launcher" type="button" aria-label="打开 PinShot 托盘菜单" title="打开托盘菜单">P</button>
+      <button id="trayLauncher" class="tray-launcher" type="button" aria-label="打开 PinShot 托盘菜单" aria-expanded="false" data-tooltip="打开托盘菜单">P</button>
       <p class="prototype-notice">这是交互原型，不会读取真实系统屏幕、注册全局快捷键或创建原生置顶窗口。</p>
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </main>

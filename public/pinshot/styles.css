@@ -48,6 +48,11 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .selection-box [data-handle="se"] { left: 100%; top: 100%; cursor: nwse-resize; }
 .selection-box [data-handle="s"] { left: 50%; top: 100%; cursor: ns-resize; }
 .selection-box [data-handle="sw"] { left: 0; top: 100%; cursor: nesw-resize; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+[data-tooltip] { position: relative; }
+[data-tooltip]::after { content: attr(data-tooltip); position: absolute; left: 50%; bottom: calc(100% + 8px); z-index: 80; width: max-content; max-width: 180px; padding: 5px 8px; border-radius: 5px; background: var(--graphite); color: var(--white); font-size: 12px; opacity: 0; pointer-events: none; transform: translate(-50%, 4px); transition: opacity .12s ease .4s, transform .12s ease .4s; }
+[data-tooltip]:hover::after, [data-tooltip]:focus-visible::after { opacity: 1; transform: translate(-50%, 0); }
+@media (prefers-contrast: more) { :focus-visible { outline: 3px solid var(--white); outline-offset: 3px; } }
 .selection-box [data-handle="w"] { left: 0; top: 50%; cursor: ew-resize; }
 .selection-size { position: absolute; z-index: 34; min-height: 24px; padding: 3px 8px; border-radius: 6px; background: var(--graphite); color: var(--white); font-size: 12px; }
 .magnifier { position: absolute; z-index: 35; width: 132px; height: 104px; border: 1px solid rgba(255,255,255,.28); border-radius: 8px; background: repeating-conic-gradient(#d8dde5 0 25%,#eef1f5 0 50%) 0/16px 16px; box-shadow: 0 12px 28px rgba(0,0,0,.32); pointer-events: none; }

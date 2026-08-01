@@ -25,6 +25,7 @@ export function reducer(state, action) {
     case "SELECTION_SET": return { ...state, mode: "selected", selection: { ...action.rect }, restoredHistory: null };
     case "TOOL_SELECT": return { ...state, mode: "annotating", activeTool: action.tool };
     case "ANNOTATION_COMMIT": return { ...state, mode: "annotating", annotations: commitAnnotation(state.annotations, action.annotation) };
+    case "TOOL_CLEAR": return { ...state, mode: state.selection ? "selected" : "idle", activeTool: "select" };
     case "ANNOTATION_UNDO": return { ...state, annotations: undoAnnotation(state.annotations) };
     case "ANNOTATION_REDO": return { ...state, annotations: redoAnnotation(state.annotations) };
     case "PIN_CREATE": return { ...state, mode: "idle", pins: [...state.pins, createPin(action.pin)], selection: null, restoredHistory: null };
