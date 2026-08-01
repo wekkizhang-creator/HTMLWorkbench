@@ -66,7 +66,7 @@ function makeDialog() {
   const buttons = panels.map((panel) => new FakeElement({ dataset: { settingsSection: panel.dataset.settingsPanel } })); buttons[0].setAttribute("aria-current", "page");
   const groupReset = panels.map((panel) => new FakeElement({ panel }));
   const close = new FakeElement(); const resetAll = new FakeElement(); const conflict = new FakeElement();
-  dialog.querySelectorAll = (selector) => ({ "[data-settings-section]": buttons, "[data-settings-panel]": panels, "[data-setting]": fields, ".settings-preview": previews, "[data-shortcut-recorder]": [fields[2]], "[data-reset-group]": groupReset }[selector] || []);
+  dialog.querySelectorAll = (selector) => ({ "[data-settings-section]": buttons, "[data-settings-panel]": panels, "[data-setting]": fields, ".settings-preview": previews, "[data-shortcut-recorder]": [fields[2]], "[data-reset-group]": groupReset, "[data-conflict-for]": [conflict] }[selector] || []);
   dialog.querySelector = (selector) => {
     if (selector === "[data-settings-close]") return close; if (selector === "[data-reset-all]") return resetAll;
     if (selector === '[data-conflict-for="paste"]') return conflict; return null;
@@ -86,4 +86,15 @@ test("settings controller synchronizes events, navigation, shortcuts, resets, an
   fixture.groupReset[1].fire("click"); assert.equal(view.getSettings().maskOpacity, DEFAULT_SETTINGS.maskOpacity); assert.equal(resets.length, 1);
   fixture.resetAll.fire("click"); assert.deepEqual(view.getSettings(), DEFAULT_SETTINGS); assert.equal(resets.length, 2);
   view.open(); assert.equal(fixture.dialog.open, true); fixture.close.fire("click"); assert.equal(fixture.dialog.open, false); assert.equal(closed, 1); assert.ok(changes.length >= 1);
+});
+
+test("first shortcut conflict is announced before its early return", () => {
+  const fixture = makeDialog();
+  const view = createSettingsView({ dialog: fixture.dialog, settings: DEFAULT_SETTINGS });
+  assert.equal(fixture.conflict.getAttribute("role"), "status");
+  fixture.fields[2].fire("click");
+  fixture.fields[2].fire("keydown", { key: "F1" });
+  assert.equal(view.getSettings().shortcuts.paste, "F3");
+  assert.ok(fixture.conflict.textContent.includes("\u51b2\u7a81"));
+  assert.equal(fixture.conflict.getAttribute("role"), "status");
 });

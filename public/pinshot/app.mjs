@@ -104,7 +104,7 @@ function render(state) {
   toolbar.hidden = !selection;
   if (displayRect) {
     Object.assign(selectionBox.style, { left: `${displayRect.x}px`, top: `${displayRect.y}px`, width: `${displayRect.width}px`, height: `${displayRect.height}px` });
-    sizeLabel.textContent = `${Math.round(displayRect.width)} ? ${Math.round(displayRect.height)}`;
+    sizeLabel.textContent = `${Math.round(displayRect.width)} × ${Math.round(displayRect.height)}`;
     Object.assign(sizeLabel.style, { left: `${displayRect.x}px`, top: `${Math.max(0, displayRect.y - 30)}px` });
   }
   if (captureView.magnifier) Object.assign(magnifier.style, { left: `${captureView.magnifier.x}px`, top: `${captureView.magnifier.y}px` });

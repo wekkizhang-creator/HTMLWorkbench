@@ -53,6 +53,8 @@ export function createSettingsView({ dialog, settings, onChange = () => {}, onRe
   let current = clone(sanitizeSettings(settings));
   const sectionButtons = [...dialog.querySelectorAll("[data-settings-section]")];
   const panels = [...dialog.querySelectorAll("[data-settings-panel]")];
+  const conflictMessages = [...dialog.querySelectorAll("[data-conflict-for]")];
+  conflictMessages.forEach((element) => element.setAttribute("role", "status"));
 
   function commit(next, reset = false) {
     current = clone(sanitizeSettings(next));

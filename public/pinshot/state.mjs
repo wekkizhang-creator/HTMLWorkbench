@@ -22,7 +22,7 @@ export function createInitialState(overrides = {}) {
 export function reducer(state, action) {
   switch (action.type) {
     case "CAPTURE_START": return { ...state, mode: "capturing", selection: null, restoredHistory: null, trayOpen: false, capture: { active: true, freeOnly: Boolean(action.freeOnly), autoCopy: Boolean(action.autoCopy), pendingAutoCopy: false, preview: null, magnifier: null, toolbarPosition: null } };
-    case "CAPTURE_CANCEL": return { ...state, mode: "idle", selection: null, annotations: { past: [], present: [], future: [] }, capture: { ...state.capture, active: false, autoCopy: false, pendingAutoCopy: false, preview: null, magnifier: null, toolbarPosition: null } };
+    case "CAPTURE_CANCEL": return { ...state, mode: "idle", selection: null, annotations: { past: [], present: [], future: [] }, capture: { ...state.capture, active: false, freeOnly: false, autoCopy: false, pendingAutoCopy: false, preview: null, magnifier: null, toolbarPosition: null } };
     case "CAPTURE_PREVIEW_SET": return { ...state, capture: { ...state.capture, preview: action.rect ? { ...action.rect } : null } };
     case "CAPTURE_MAGNIFIER_SET": return { ...state, capture: { ...state.capture, magnifier: action.point ? { ...action.point } : null } };
     case "CAPTURE_TOOLBAR_SET": return { ...state, capture: { ...state.capture, toolbarPosition: action.position ? { ...action.position } : null } };
