@@ -68,16 +68,16 @@ test("pointer cancellation clears an active drag before a later pointerup", () =
   elements.overlay.emit("pointerup", { clientX: 600, clientY: 600 });
   assert.equal(store.getState().mode, "idle");
   assert.equal(store.getState().selection, null);
-  assert.equal(elements.overlay.hidden, true);
+  assert.equal(store.getState().capture.active, false);
 });
 
 test("toolbar placement measures its rendered width when initially hidden", () => {
-  const { capture, elements } = createHarness();
+  const { capture, elements, store } = createHarness();
   elements.toolbar.hidden = true;
   capture.start();
   elements.overlay.emit("pointerdown", { clientX: 850, clientY: 300 });
   elements.overlay.emit("pointerup", { clientX: 950, clientY: 400 });
-  assert.equal(elements.toolbar.style.left, "800px");
+  assert.deepEqual(store.getState().capture.toolbarPosition, { x: 800, y: 412, placement: "below" });
 });
 
 test("resize handles keep a 10 pixel visual while exposing a 36 pixel hit target", async () => {

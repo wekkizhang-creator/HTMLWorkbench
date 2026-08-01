@@ -57,6 +57,8 @@ export function createSettingsView({ dialog, settings, onChange = () => {}, onRe
   function commit(next, reset = false) {
     current = clone(sanitizeSettings(next));
     writeFields(dialog, current);
+  const conflictMessages = [...dialog.querySelectorAll("[data-conflict-for]")];
+  conflictMessages.forEach((element) => element.setAttribute("role", "status"));
     updatePreviews(dialog, current);
   dialog.querySelectorAll("[data-conflict-for]").forEach((element) => element.setAttribute("role", "status"));
     (reset ? onReset : onChange)(clone(current));

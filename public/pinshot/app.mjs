@@ -14,6 +14,10 @@ app.setAttribute("data-pinshot-ready", "true");
 const desktopScene = document.querySelector("#desktopScene");
 const overlay = document.querySelector("#captureOverlay");
 const canvas = document.querySelector("#annotationCanvas");
+const selectionBox = document.querySelector("#selectionBox");
+const sizeLabel = document.querySelector("#selectionSize");
+const magnifier = document.querySelector("#magnifier");
+const captureOverlay = document.querySelector("#captureOverlay");
 const toolbar = document.querySelector("#annotationToolbar");
 for (const button of toolbar.querySelectorAll("button")) {
   if (!button.hasAttribute("aria-pressed")) button.setAttribute("aria-pressed", "false");
@@ -37,10 +41,10 @@ const pinActions = createPinActions({
 
 const capture = createCaptureController({
   root: desktopScene,
-  overlay,
-  selectionBox: document.querySelector("#selectionBox"),
-  sizeLabel: document.querySelector("#selectionSize"),
-  magnifier: document.querySelector("#magnifier"),
+  overlay: captureOverlay,
+  selectionBox,
+  sizeLabel,
+  magnifier,
   toolbar
 }, store, () => activeSettings);
 const annotationCanvas = createCanvasController({
@@ -76,7 +80,7 @@ async function createPinFromSelection() {
       store.dispatch({ type: "HISTORY_ADD", item: { id: nextId("history"), createdAt: new Date().toISOString(), width: composite.width, height: composite.height, selection: { ...selection }, imageBlob: blob } });
     }
     store.dispatch({ type: "PIN_CREATE", pin: { id: nextId("pin"), x: 80 + (state.pins.length % 4) * 24, y: 80 + (state.pins.length % 4) * 24, width: selection.width, height: selection.height, imageBlob: blob, group: state.activePinGroup } });
-    if (!overlay.hidden) {
+    if (state.capture.active) {
       capture.cancel();
       captureLauncher.focus();
     }
@@ -91,6 +95,20 @@ function render(state) {
   const selection = state.selection;
   toast.textContent = state.toast || "";
   toast.classList.toggle("is-visible", Boolean(state.toast));
+  const captureView = state.capture;
+  captureOverlay.hidden = !captureView.active;
+  const displayRect = selection || captureView.preview;
+  selectionBox.hidden = !displayRect;
+  sizeLabel.hidden = !displayRect;
+  magnifier.hidden = !captureView.magnifier;
+  toolbar.hidden = !selection;
+  if (displayRect) {
+    Object.assign(selectionBox.style, { left: `${displayRect.x}px`, top: `${displayRect.y}px`, width: `${displayRect.width}px`, height: `${displayRect.height}px` });
+    sizeLabel.textContent = `${Math.round(displayRect.width)} ? ${Math.round(displayRect.height)}`;
+    Object.assign(sizeLabel.style, { left: `${displayRect.x}px`, top: `${Math.max(0, displayRect.y - 30)}px` });
+  }
+  if (captureView.magnifier) Object.assign(magnifier.style, { left: `${captureView.magnifier.x}px`, top: `${captureView.magnifier.y}px` });
+  if (captureView.toolbarPosition) Object.assign(toolbar.style, { left: `${captureView.toolbarPosition.x}px`, top: `${captureView.toolbarPosition.y}px` });
   historyStrip.hidden = state.history.length === 0;
   trayMenu.hidden = !state.trayOpen;
   trayLauncher.setAttribute("aria-expanded", String(state.trayOpen));
@@ -111,7 +129,13 @@ function render(state) {
   }
 }
 
-store.subscribe(render);
+store.subscribe((state, action) => {
+  render(state);
+  if (action.type === "SELECTION_SET" && state.capture.pendingAutoCopy) {
+    store.dispatch({ type: "CAPTURE_AUTO_COPY_CONSUME" });
+    void runOutput("copy");
+  }
+});
 
 function applySettings(settings) {
   document.documentElement.dataset.theme = settings.theme;
@@ -158,7 +182,7 @@ const escape = createEscapeHandler([
   { active: () => store.getState().trayOpen, close: () => store.dispatch({ type: "TRAY_TOGGLE" }) },
   { active: () => store.getState().settingsOpen, close: () => { settingsView.close(); store.dispatch({ type: "SETTINGS_CLOSE" }); trayLauncher.focus(); } },
   { active: () => store.getState().mode === "annotating" && store.getState().activeTool !== "select", close: () => store.dispatch({ type: "TOOL_CLEAR" }) },
-  { active: () => !overlay.hidden, close: closeCapture }
+  { active: () => store.getState().capture.active, close: closeCapture }
 ]);
 
 function execute(command) {
@@ -168,7 +192,9 @@ function execute(command) {
     store.dispatch({ type: "TOOL_SELECT", tool: command });
     return true;
   }
-  if (["capture", "captureAndCopy", "customCapture"].includes(command)) { capture.start(); return true; }
+  if (command === "capture") { capture.start(); return true; }
+  if (command === "captureAndCopy") { capture.start({ autoCopy: true }); return true; }
+  if (command === "customCapture") { capture.start({ freeOnly: true }); return true; }
   if (command === "paste") {
     if (!state.selection) return false;
     void createPinFromSelection();
@@ -181,7 +207,7 @@ function execute(command) {
   if (command === "escape") return escape();
   if (["copy", "save", "complete"].includes(command) && state.selection) {
     void runOutput(command);
-    if (command === "complete") captureLauncher.focus();
+    if (command === "complete") return true;
     return true;
   }
   return false;

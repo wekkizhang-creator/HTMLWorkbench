@@ -13,6 +13,7 @@ export function createInitialState(overrides = {}) {
     restoredHistory: null,
     settingsOpen: false,
     trayOpen: false,
+    capture: { active: false, freeOnly: false, autoCopy: false, pendingAutoCopy: false, preview: null, magnifier: null, toolbarPosition: null },
     toast: null,
     ...overrides
   };
@@ -20,9 +21,13 @@ export function createInitialState(overrides = {}) {
 
 export function reducer(state, action) {
   switch (action.type) {
-    case "CAPTURE_START": return { ...state, mode: "capturing", selection: null, restoredHistory: null, trayOpen: false };
-    case "CAPTURE_CANCEL": return { ...state, mode: "idle", selection: null, annotations: { past: [], present: [], future: [] } };
-    case "SELECTION_SET": return { ...state, mode: "selected", selection: { ...action.rect }, restoredHistory: null };
+    case "CAPTURE_START": return { ...state, mode: "capturing", selection: null, restoredHistory: null, trayOpen: false, capture: { active: true, freeOnly: Boolean(action.freeOnly), autoCopy: Boolean(action.autoCopy), pendingAutoCopy: false, preview: null, magnifier: null, toolbarPosition: null } };
+    case "CAPTURE_CANCEL": return { ...state, mode: "idle", selection: null, annotations: { past: [], present: [], future: [] }, capture: { ...state.capture, active: false, autoCopy: false, pendingAutoCopy: false, preview: null, magnifier: null, toolbarPosition: null } };
+    case "CAPTURE_PREVIEW_SET": return { ...state, capture: { ...state.capture, preview: action.rect ? { ...action.rect } : null } };
+    case "CAPTURE_MAGNIFIER_SET": return { ...state, capture: { ...state.capture, magnifier: action.point ? { ...action.point } : null } };
+    case "CAPTURE_TOOLBAR_SET": return { ...state, capture: { ...state.capture, toolbarPosition: action.position ? { ...action.position } : null } };
+    case "CAPTURE_AUTO_COPY_CONSUME": return { ...state, capture: { ...state.capture, pendingAutoCopy: false, autoCopy: false } };
+    case "SELECTION_SET": return { ...state, mode: "selected", selection: { ...action.rect }, restoredHistory: null, capture: { ...state.capture, preview: { ...action.rect }, pendingAutoCopy: state.capture.autoCopy } };
     case "TOOL_SELECT": return { ...state, mode: "annotating", activeTool: action.tool };
     case "ANNOTATION_COMMIT": return { ...state, mode: "annotating", annotations: commitAnnotation(state.annotations, action.annotation) };
     case "TOOL_CLEAR": return { ...state, mode: state.selection ? "selected" : "idle", activeTool: "select" };

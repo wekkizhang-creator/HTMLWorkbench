@@ -55,6 +55,7 @@ test("escape closes exactly one active layer in documented priority order", () =
 test("escape is unhandled when every layer is inactive", () => {
   const escape = createEscapeHandler([{ active: () => false, close: () => assert.fail("should not close") }]);
   assert.equal(escape(), false);
+});
 
 test("app centralizes keyboard execution, escape layers and focus restoration", async () => {
   const app = await readFile("public/pinshot/app.mjs", "utf8");
@@ -77,15 +78,15 @@ test("shell exposes state-rendered accessibility affordances", async () => {
   assert.match(css, /\[data-tooltip\]::after/);
   assert.match(css, /prefers-contrast/);
 });
-});
+
 test("router ignores editable targets before dispatching", () => {
   let called = false;
-
-test("pin completion restores focus after cancelling an active capture", async () => {
-  const app = await readFile("public/pinshot/app.mjs", "utf8");
-  assert.match(app, /if \(!overlay\.hidden\) \{\s*capture\.cancel\(\);\s*captureLauncher\.focus\(\);\s*\}/s);
-});
   const router = createKeyboardRouter({ settings: () => DEFAULT_SETTINGS, mode: () => "idle", execute: () => { called = true; return true; } });
   router.handle({ ...key("F1"), target: { matches: () => true }, preventDefault() {} });
   assert.equal(called, false);
+});
+
+test("pin completion restores focus after cancelling an active capture", async () => {
+  const app = await readFile("public/pinshot/app.mjs", "utf8");
+  assert.match(app, /if \(state\.capture\.active\) \{\s*capture\.cancel\(\);\s*captureLauncher\.focus\(\);\s*\}/s);
 });
