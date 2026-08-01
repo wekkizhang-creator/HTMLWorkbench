@@ -11,12 +11,16 @@ export function clampRect(rect, bounds, minimum = 24) {
 }
 
 export function resizeRect(rect, handle, point, bounds) {
-  const edges = { left: rect.x, top: rect.y, right: rect.x + rect.width, bottom: rect.y + rect.height };
-  if (handle.includes("w")) edges.left = point.x;
-  if (handle.includes("e")) edges.right = point.x;
-  if (handle.includes("n")) edges.top = point.y;
-  if (handle.includes("s")) edges.bottom = point.y;
-  return clampRect(normalizeRect({ x: edges.left, y: edges.top }, { x: edges.right, y: edges.bottom }), bounds);
+  const base = clampRect(rect, bounds);
+  let left = base.x;
+  let top = base.y;
+  let right = base.x + base.width;
+  let bottom = base.y + base.height;
+  if (handle.includes("w")) left = Math.min(right - 24, Math.max(0, point.x));
+  if (handle.includes("e")) right = Math.max(left + 24, Math.min(bounds.width, point.x));
+  if (handle.includes("n")) top = Math.min(bottom - 24, Math.max(0, point.y));
+  if (handle.includes("s")) bottom = Math.max(top + 24, Math.min(bounds.height, point.y));
+  return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
 export function findCandidate(point, candidates) {

@@ -39,7 +39,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .capture-overlay { position: absolute; inset: 0; z-index: 30; cursor: crosshair; background: rgba(0,0,0,.55); }
 .selection-box { position: absolute; z-index: 31; border: 2px solid var(--blue); background: rgba(255,255,255,.03); box-shadow: 0 0 0 9999px rgba(0,0,0,.01); }
-.selection-box [data-handle] { position: absolute; width: 10px; height: 10px; border: 2px solid var(--blue); border-radius: 50%; background: var(--white); transform: translate(-50%,-50%); }
+.selection-box [data-handle] { position: absolute; width: 36px; height: 36px; border: 0; background: transparent; transform: translate(-50%,-50%); }
+.selection-box [data-handle]::after { content: ""; position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; border: 2px solid var(--blue); border-radius: 50%; background: var(--white); transform: translate(-50%,-50%); }
 .selection-box [data-handle="nw"] { left: 0; top: 0; cursor: nwse-resize; }
 .selection-box [data-handle="n"] { left: 50%; top: 0; cursor: ns-resize; }
 .selection-box [data-handle="ne"] { left: 100%; top: 0; cursor: nesw-resize; }

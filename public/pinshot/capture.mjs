@@ -5,6 +5,7 @@ export function createCaptureController(elements, store, getSettings) {
   let hoveredCandidate = null;
   let candidates = [];
   const bounds = () => ({ width: elements.root.clientWidth, height: elements.root.clientHeight });
+  let previewRect = null;
   const point = (event) => {
     const rect = elements.root.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -12,6 +13,7 @@ export function createCaptureController(elements, store, getSettings) {
 
   function renderRect(rect) {
     Object.assign(elements.selectionBox.style, { left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+    previewRect = { ...rect };
     elements.selectionBox.hidden = false;
     elements.sizeLabel.hidden = false;
     elements.sizeLabel.textContent = `${Math.round(rect.width)} × ${Math.round(rect.height)}`;
@@ -23,8 +25,9 @@ export function createCaptureController(elements, store, getSettings) {
     const handle = event.target.closest?.("[data-handle]")?.dataset.handle;
     const cursor = point(event);
     const candidate = hoveredCandidate || findCandidate(cursor, candidates);
-    drag = handle
-      ? { kind: "resize", handle, origin: store.getState().selection }
+    const origin = store.getState().selection || previewRect;
+    drag = handle && origin
+      ? { kind: "resize", handle, origin }
       : candidate
         ? { kind: "candidate", rect: { ...candidate }, start: cursor }
         : { kind: "create", start: cursor };
@@ -37,6 +40,7 @@ export function createCaptureController(elements, store, getSettings) {
     Object.assign(elements.magnifier.style, { left: `${cursor.x + 20}px`, top: `${cursor.y + 20}px` });
     if (!drag) {
       hoveredCandidate = findCandidate(cursor, candidates);
+      previewRect = hoveredCandidate ? { ...hoveredCandidate } : null;
       if (hoveredCandidate) renderRect(hoveredCandidate);
       return;
     }
@@ -52,6 +56,14 @@ export function createCaptureController(elements, store, getSettings) {
       : clampRect(normalizeRect(drag.start, cursor), bounds());
     renderRect(rect);
   }
+  function measureToolbar() {
+    const wasHidden = elements.toolbar.hidden;
+    elements.toolbar.hidden = false;
+    const rect = elements.toolbar.getBoundingClientRect();
+    const size = { width: rect.width || elements.toolbar.offsetWidth, height: rect.height || elements.toolbar.offsetHeight || 48 };
+    if (wasHidden) elements.toolbar.hidden = true;
+    return size;
+  }
 
   function end(event) {
     if (!drag) return;
@@ -64,10 +76,22 @@ export function createCaptureController(elements, store, getSettings) {
     drag = null;
     store.dispatch({ type: "SELECTION_SET", rect });
     renderRect(rect);
-    const position = placeToolbar(rect, { width: elements.toolbar.offsetWidth, height: 48 }, bounds());
+    const position = placeToolbar(rect, measureToolbar(), bounds());
     Object.assign(elements.toolbar.style, { left: `${position.x}px`, top: `${position.y}px` });
     elements.toolbar.hidden = false;
   }
+  function cancel() {
+    drag = null;
+    hoveredCandidate = null;
+    previewRect = null;
+    elements.overlay.hidden = true;
+    elements.selectionBox.hidden = true;
+    elements.sizeLabel.hidden = true;
+    elements.magnifier.hidden = true;
+    elements.toolbar.hidden = true;
+    store.dispatch({ type: "CAPTURE_CANCEL" });
+  }
+
 
   return {
     mount(candidateRects) {
@@ -75,18 +99,17 @@ export function createCaptureController(elements, store, getSettings) {
       elements.overlay.addEventListener("pointerdown", begin);
       elements.overlay.addEventListener("pointermove", move);
       elements.overlay.addEventListener("pointerup", end);
+      elements.overlay.addEventListener("pointercancel", cancel);
     },
     start() {
       elements.overlay.hidden = false;
       store.dispatch({ type: "CAPTURE_START" });
+      drag = null;
+      hoveredCandidate = null;
+      previewRect = null;
     },
     cancel() {
-      elements.overlay.hidden = true;
-      elements.selectionBox.hidden = true;
-      elements.sizeLabel.hidden = true;
-      elements.magnifier.hidden = true;
-      elements.toolbar.hidden = true;
-      store.dispatch({ type: "CAPTURE_CANCEL" });
+      cancel();
     }
   };
 }
