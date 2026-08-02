@@ -22,12 +22,26 @@ test("F3 accepts an active selection, restored history, or the latest idle histo
 
 test("application fits each new pin inside the current pin layer before creation", async () => {
   const source = await readFile("public/pinshot/app.mjs", "utf8");
-  assert.match(source, /fitPinToViewport/);
-  assert.match(source, /const initialPin = fitPinToViewport\(/);
+  assert.match(source, /dispatchFittedPin/);
   assert.match(source, /width:\s*pinLayer\.clientWidth/);
   assert.match(source, /height:\s*pinLayer\.clientHeight/);
   assert.match(source, /activeSettings\.pinMaxSize/);
-  assert.match(source, /type:\s*"PIN_CREATE",\s*pin:\s*initialPin/);
+});
+
+test("application pin creation rejects unsafe geometry without dispatching PIN_CREATE", async () => {
+  const pinCreation = await import("../public/pinshot/pin-creation.mjs").catch(() => ({}));
+  assert.equal(typeof pinCreation.dispatchFittedPin, "function");
+  const actions = [];
+  assert.throws(
+    () => pinCreation.dispatchFittedPin({
+      dispatch: (action) => actions.push(action),
+      pin: { width: 320, height: 180 },
+      viewport: { width: 0, height: 600 },
+      maxSize: 12000
+    }),
+    /无法在当前视口创建贴图/
+  );
+  assert.deepEqual(actions, []);
 });
 
 test("history restore reopens the capture overlay and recalculates its toolbar from the viewport", async () => {

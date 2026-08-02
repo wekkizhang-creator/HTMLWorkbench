@@ -219,6 +219,7 @@ test("PinShot static assets are publicly served with cache validators and comple
     "public/pinshot/scene.mjs",
     "public/pinshot/output.mjs",
     "public/pinshot/pins.mjs",
+    "public/pinshot/pin-creation.mjs",
     "public/pinshot/settings.mjs",
     "public/pinshot/settings-view.mjs",
     "public/pinshot/keyboard.mjs"

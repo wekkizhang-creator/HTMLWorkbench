@@ -52,18 +52,29 @@ export function clampPinPosition(pin, viewport) {
   };
 }
 
-export function fitPinToViewport(pin, viewport, maxSize = Infinity) {
-  if (!Number.isFinite(viewport?.width) || !Number.isFinite(viewport?.height) || viewport.width <= 0 || viewport.height <= 0) return { ...pin };
-  const baseGeometry = getPinDisplayGeometry({ ...pin, scale: 1 });
+export function fitPinToViewport(pin, viewport, maxSize) {
+  const viewportWidth = Number(viewport?.width);
+  const viewportHeight = Number(viewport?.height);
+  const pinWidth = Number(pin?.width);
+  const pinHeight = Number(pin?.height);
   const finiteMaxSize = Number(maxSize);
+  const unlimitedMaxSize = maxSize === Number.POSITIVE_INFINITY;
+  if (
+    !Number.isFinite(viewportWidth) || viewportWidth <= 0 ||
+    !Number.isFinite(viewportHeight) || viewportHeight <= 0 ||
+    !Number.isFinite(pinWidth) || pinWidth <= 0 ||
+    !Number.isFinite(pinHeight) || pinHeight <= 0 ||
+    (!unlimitedMaxSize && (!Number.isFinite(finiteMaxSize) || finiteMaxSize <= 0))
+  ) return null;
+  const baseGeometry = getPinDisplayGeometry({ ...pin, width: pinWidth, height: pinHeight, scale: 1 });
   const limits = [
-    baseGeometry.width > 0 ? viewport.width / baseGeometry.width : Infinity,
-    baseGeometry.height > 0 ? viewport.height / baseGeometry.height : Infinity,
-    Number.isFinite(finiteMaxSize) && finiteMaxSize > 0 && baseGeometry.width > 0 ? finiteMaxSize / baseGeometry.width : Infinity,
-    Number.isFinite(finiteMaxSize) && finiteMaxSize > 0 && baseGeometry.height > 0 ? finiteMaxSize / baseGeometry.height : Infinity
+    viewportWidth / baseGeometry.width,
+    viewportHeight / baseGeometry.height,
+    unlimitedMaxSize ? Infinity : finiteMaxSize / baseGeometry.width,
+    unlimitedMaxSize ? Infinity : finiteMaxSize / baseGeometry.height
   ];
   const scale = Math.min(Number(pin.scale || 1), ...limits);
-  return clampPinPosition({ ...pin, scale: Number.isFinite(scale) && scale > 0 ? scale : Number(pin.scale || 1) }, viewport);
+  return clampPinPosition({ ...pin, width: pinWidth, height: pinHeight, scale: Number.isFinite(scale) && scale > 0 ? scale : Number(pin.scale || 1) }, { width: viewportWidth, height: viewportHeight });
 }
 
 export function scalePin(pin, direction) {

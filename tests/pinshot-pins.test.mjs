@@ -97,6 +97,10 @@ test("initial pin geometry scales and clamps full-screen captures inside the pin
   const viewport = { width: 1920, height: 1080 };
   const fullScreen = fitPinToViewport(createPin({ x: 80, y: 80, width: 1920, height: 1080 }), viewport, 12000);
   assert.deepEqual(fullScreen, createPin({ x: 0, y: 0, width: 1920, height: 1080 }));
+  const fullScreenGeometry = getPinDisplayGeometry(fullScreen);
+  const controlTop = fullScreen.y + 6 * fullScreen.scale;
+  assert.ok(fullScreen.y >= 0 && fullScreen.y + fullScreenGeometry.height <= viewport.height);
+  assert.ok(controlTop >= fullScreen.y && controlTop < viewport.height);
 
   const oversized = fitPinToViewport(createPin({ x: 80, y: 80, width: 3840, height: 2160 }), viewport, 12000);
   assert.equal(oversized.scale, 0.5);
@@ -107,6 +111,50 @@ test("initial pin geometry scales and clamps full-screen captures inside the pin
   const settingsCapped = fitPinToViewport(createPin({ width: 16000, height: 8000 }), { width: 20000, height: 20000 }, 12000);
   assert.equal(settingsCapped.scale, 0.75);
   assert.deepEqual(getPinDisplayGeometry(settingsCapped), { width: 12000, height: 6000, translateX: 0, translateY: 0 });
+});
+
+test("initial pin fitting rejects unsafe viewport, pin, and max-size geometry", () => {
+  const pin = createPin({ width: 320, height: 180 });
+  for (const viewport of [
+    { width: -1, height: 600 },
+    { width: 0, height: 600 },
+    { width: 800, height: -1 },
+    { width: 800, height: 0 },
+    { width: Number.NaN, height: 600 },
+    { width: 800, height: Number.NaN },
+    { width: Number.POSITIVE_INFINITY, height: 600 },
+    { width: 800, height: Number.POSITIVE_INFINITY }
+  ]) {
+    assert.equal(fitPinToViewport(pin, viewport, 12000), null);
+  }
+
+  for (const dimensions of [
+    { width: -1, height: 180 },
+    { width: 0, height: 180 },
+    { width: 320, height: -1 },
+    { width: 320, height: 0 },
+    { width: Number.NaN, height: 180 },
+    { width: 320, height: Number.NaN },
+    { width: Number.POSITIVE_INFINITY, height: 180 },
+    { width: 320, height: Number.POSITIVE_INFINITY }
+  ]) {
+    assert.equal(fitPinToViewport(createPin(dimensions), { width: 800, height: 600 }, 12000), null);
+  }
+
+  for (const maxSize of [undefined, 0, -1, Number.NaN, Number.NEGATIVE_INFINITY]) {
+    assert.equal(fitPinToViewport(pin, { width: 800, height: 600 }, maxSize), null);
+  }
+});
+
+test("an explicitly infinite max size preserves valid aspect-ratio fitting", () => {
+  const fitted = fitPinToViewport(
+    createPin({ x: 80, y: 80, width: 1600, height: 900 }),
+    { width: 800, height: 600 },
+    Number.POSITIVE_INFINITY
+  );
+  assert.ok(fitted);
+  assert.equal(fitted.scale, 0.5);
+  assert.deepEqual(getPinDisplayGeometry(fitted), { width: 800, height: 450, translateX: 0, translateY: 0 });
 });
 
 test("rendered pin cards have position-independent Chinese names", () => {

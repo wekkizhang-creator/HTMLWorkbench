@@ -5,7 +5,8 @@ import { createSettingsView } from "./settings-view.mjs";
 import { createEscapeHandler, createKeyboardRouter } from "./keyboard.mjs";
 import { createInitialState, createStore } from "./state.mjs";
 import { canvasToBlob, createCompositeCanvas, createOutputRunner } from "./output.mjs";
-import { createPin, createPinActions, fitPinToViewport, renderPins, resolvePinSource } from "./pins.mjs";
+import { createPin, createPinActions, renderPins, resolvePinSource } from "./pins.mjs";
+import { dispatchFittedPin } from "./pin-creation.mjs";
 
 const app = document.querySelector("#pinshotApp");
 if (!app) throw new Error("PinShot root is missing");
@@ -77,12 +78,12 @@ async function createPinFromSelection(source) {
       blob = await canvasToBlob(composite);
       store.dispatch({ type: "HISTORY_ADD", item: { id: nextId("history"), createdAt: new Date().toISOString(), width: composite.width, height: composite.height, selection: { ...selection }, imageBlob: blob } });
     }
-    const initialPin = fitPinToViewport(
-      createPin({ id: nextId("pin"), x: 80 + (state.pins.length % 4) * 24, y: 80 + (state.pins.length % 4) * 24, width: selection.width, height: selection.height, imageBlob: blob, group: state.activePinGroup }),
-      { width: pinLayer.clientWidth, height: pinLayer.clientHeight },
-      activeSettings.pinMaxSize
-    );
-    store.dispatch({ type: "PIN_CREATE", pin: initialPin });
+    dispatchFittedPin({
+      dispatch: (action) => store.dispatch(action),
+      pin: createPin({ id: nextId("pin"), x: 80 + (state.pins.length % 4) * 24, y: 80 + (state.pins.length % 4) * 24, width: selection.width, height: selection.height, imageBlob: blob, group: state.activePinGroup }),
+      viewport: { width: pinLayer.clientWidth, height: pinLayer.clientHeight },
+      maxSize: activeSettings.pinMaxSize
+    });
     if (state.capture.active) {
       capture.cancel();
       captureLauncher.focus();

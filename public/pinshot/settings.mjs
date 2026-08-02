@@ -1,4 +1,6 @@
 export const SETTINGS_KEY = "pinshot.settings.v1";
+export const PIN_MAX_SIZE_MIN = 320;
+export const PIN_MAX_SIZE_MAX = 12000;
 export const DEFAULT_SETTINGS = Object.freeze({
   theme: "dark",
   locale: "zh-CN",
@@ -49,6 +51,11 @@ export const DEFAULT_SETTINGS = Object.freeze({
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, Number(value)));
 }
+function clampFinite(value, min, max, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? clamp(numeric, min, max) : fallback;
+}
+
 
 export function sanitizeSettings(candidate = {}) {
   const shortcuts = { ...DEFAULT_SETTINGS.shortcuts, ...(candidate.shortcuts || {}) };
@@ -61,6 +68,7 @@ export function sanitizeSettings(candidate = {}) {
     maskOpacity: clamp(candidate.maskOpacity ?? DEFAULT_SETTINGS.maskOpacity, 10, 85),
     pinOpacity: clamp(candidate.pinOpacity ?? DEFAULT_SETTINGS.pinOpacity, 10, 100),
     thumbnailWidth: clamp(candidate.thumbnailWidth ?? DEFAULT_SETTINGS.thumbnailWidth, 40, 160),
+    pinMaxSize: clampFinite(candidate.pinMaxSize ?? DEFAULT_SETTINGS.pinMaxSize, PIN_MAX_SIZE_MIN, PIN_MAX_SIZE_MAX, DEFAULT_SETTINGS.pinMaxSize),
     thumbnailHeight: clamp(candidate.thumbnailHeight ?? DEFAULT_SETTINGS.thumbnailHeight, 40, 160),
     annotationWidth: clamp(candidate.annotationWidth ?? DEFAULT_SETTINGS.annotationWidth, 1, 16),
     annotationFontSize: clamp(candidate.annotationFontSize ?? DEFAULT_SETTINGS.annotationFontSize, 12, 72),

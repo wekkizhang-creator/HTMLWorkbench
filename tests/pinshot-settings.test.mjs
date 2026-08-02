@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DEFAULT_SETTINGS, findShortcutConflict, loadSettings, resetSettings, saveSettings } from "../public/pinshot/settings.mjs";
+import { DEFAULT_SETTINGS, findShortcutConflict, loadSettings, resetSettings, sanitizeSettings, saveSettings } from "../public/pinshot/settings.mjs";
 
 function memoryStorage(initial = {}) {
   const values = new Map(Object.entries(initial));
@@ -25,6 +25,23 @@ test("settings round trip retains valid values and clamps pin opacity", () => {
   assert.equal(loaded.theme, "light");
   assert.equal(loaded.pinOpacity, 100);
   assert.equal(loaded.mouseActions.closePin, "DoubleClick");
+});
+
+test("pin maximum size is sanitized to the supported 320 through 12000 range", () => {
+  assert.equal(sanitizeSettings({ pinMaxSize: 0 }).pinMaxSize, 320);
+  assert.equal(sanitizeSettings({ pinMaxSize: 319 }).pinMaxSize, 320);
+  assert.equal(sanitizeSettings({ pinMaxSize: 12001 }).pinMaxSize, 12000);
+  assert.equal(sanitizeSettings({ pinMaxSize: Number.NaN }).pinMaxSize, DEFAULT_SETTINGS.pinMaxSize);
+
+  const storage = memoryStorage({
+    "pinshot.settings.v1": JSON.stringify({ pinMaxSize: -50 })
+  });
+  assert.equal(loadSettings(storage).pinMaxSize, 320);
+});
+
+test("pin maximum size field documents the supported browser range", async () => {
+  const html = await import("node:fs/promises").then(({ readFile }) => readFile("public/pinshot.html", "utf8"));
+  assert.match(html, /<input type="number" min="320" max="12000" data-setting="pinMaxSize">/);
 });
 
 test("shortcut conflicts name the existing action", () => {
