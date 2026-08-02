@@ -20,7 +20,9 @@ test("every icon-only button has an accessible Chinese label", async () => {
   const html = await readFile("public/pinshot.html", "utf8");
   const iconButtons = [...html.matchAll(/<button[^>]*data-icon-only[^>]*>/g)].map((match) => match[0]);
   assert.ok(iconButtons.length >= 8);
-  for (const button of iconButtons) assert.match(button, /aria-label="[^\"]*[\u4e00-\u9fff][^\"]*"/);
+  for (const button of iconButtons) {
+    assert.match(button, /aria-label="[^\"]*[\u4e00-\u9fff][^\"]*"/);
+  }
 });
 
 test("hidden PinShot layers override component display declarations", async () => {

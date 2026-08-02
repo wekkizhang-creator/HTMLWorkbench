@@ -27,3 +27,20 @@ export function drawDesktopScene(ctx, { width, height, offsetX = 0, offsetY = 0 
   ctx.fillText("PinShot", windows[1].x + windows[1].w * .31, windows[1].y + windows[1].h * .5);
   ctx.restore();
 }
+
+const byteToHex = (value) => Math.round(value).toString(16).padStart(2, "0").toUpperCase();
+
+export function sampleDesktopSceneColor(documentRef, { x, y, width, height }) {
+  const sceneWidth = Math.max(1, Math.round(Number(width) || 1));
+  const sceneHeight = Math.max(1, Math.round(Number(height) || 1));
+  const surface = documentRef.createElement("canvas");
+  surface.width = sceneWidth;
+  surface.height = sceneHeight;
+  const context = surface.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("Unable to sample the PinShot scene");
+  drawDesktopScene(context, { width: sceneWidth, height: sceneHeight });
+  const sampleX = Math.min(sceneWidth - 1, Math.max(0, Math.floor(Number(x) || 0)));
+  const sampleY = Math.min(sceneHeight - 1, Math.max(0, Math.floor(Number(y) || 0)));
+  const [red, green, blue] = context.getImageData(sampleX, sampleY, 1, 1).data;
+  return `#${byteToHex(red)}${byteToHex(green)}${byteToHex(blue)}`;
+}

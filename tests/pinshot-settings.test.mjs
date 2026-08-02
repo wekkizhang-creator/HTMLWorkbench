@@ -27,6 +27,11 @@ test("settings round trip retains valid values and clamps pin opacity", () => {
   assert.equal(loaded.mouseActions.closePin, "DoubleClick");
 });
 
+test("output format accepts JPG and recovers unsupported values to PNG", () => {
+  assert.equal(sanitizeSettings({ outputFormat: "jpg" }).outputFormat, "jpg");
+  assert.equal(sanitizeSettings({ outputFormat: "webp" }).outputFormat, "png");
+});
+
 test("pin maximum size is sanitized to the supported 320 through 12000 range", () => {
   assert.equal(sanitizeSettings({ pinMaxSize: 0 }).pinMaxSize, 320);
   assert.equal(sanitizeSettings({ pinMaxSize: 319 }).pinMaxSize, 320);

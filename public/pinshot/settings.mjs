@@ -72,6 +72,7 @@ export function sanitizeSettings(candidate = {}) {
     thumbnailHeight: clamp(candidate.thumbnailHeight ?? DEFAULT_SETTINGS.thumbnailHeight, 40, 160),
     annotationWidth: clamp(candidate.annotationWidth ?? DEFAULT_SETTINGS.annotationWidth, 1, 16),
     annotationFontSize: clamp(candidate.annotationFontSize ?? DEFAULT_SETTINGS.annotationFontSize, 12, 72),
+    outputFormat: candidate.outputFormat === "jpg" ? "jpg" : "png",
     mouseActions,
     shortcuts
   };

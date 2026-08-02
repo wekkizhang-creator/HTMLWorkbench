@@ -31,7 +31,7 @@ function createHarness({ tool = "rectangle", selection = { x: 100, y: 50, width:
     canvas,
     getSelection: () => selection,
     getTool: () => tool,
-    getStyle: () => ({ color: "#4C8DFF", width: 3 }),
+    getStyle: () => ({ color: "#4C8DFF", width: 3, fontSize: 42 }),
     onCommit(annotation) { committed.push(annotation); }
   });
   return { canvas, calls, committed, controller, parent, selection };
@@ -68,6 +68,7 @@ test("inline text editor is positioned in overlay coordinates but commits local 
     input.value = "备注";
     inputListeners.get("keydown")({ key: "Enter" });
     assert.deepEqual(committed.map((item) => ({ type: item.type, x: item.x, y: item.y, text: item.text })), [{ type: "text", x: 20, y: 20, text: "备注" }]);
+    assert.equal(committed[0].fontSize, 42);
   } finally {
     globalThis.document = originalDocument;
   }

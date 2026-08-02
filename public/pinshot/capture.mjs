@@ -1,9 +1,40 @@
 import { clampRect, findCandidate, normalizeRect, placeToolbar, resizeRect } from "./geometry.mjs";
 
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
 export function getToolbarPosition(selection, toolbar, bounds) {
   const measured = toolbar.getBoundingClientRect();
   const size = { width: measured.width || toolbar.offsetWidth || 200, height: measured.height || toolbar.offsetHeight || 48 };
   return placeToolbar(selection, size, bounds);
+}
+
+export function getMagnifierPosition(cursor, bounds, size = { width: 132, height: 104 }, gap = 20) {
+  const maxX = Math.max(0, bounds.width - size.width);
+  const maxY = Math.max(0, bounds.height - size.height);
+  const preferredX = cursor.x + gap + size.width <= bounds.width
+    ? cursor.x + gap
+    : cursor.x - gap - size.width;
+  const preferredY = cursor.y + gap + size.height <= bounds.height
+    ? cursor.y + gap
+    : cursor.y - gap - size.height;
+  return {
+    x: clamp(preferredX, 0, maxX),
+    y: clamp(preferredY, 0, maxY)
+  };
+}
+
+export function getSizeLabelPosition(selection, label, bounds, gap = 6) {
+  const measured = label.getBoundingClientRect();
+  const width = measured.width || label.offsetWidth || 82;
+  const height = measured.height || label.offsetHeight || 24;
+  const maxX = Math.max(0, bounds.width - width);
+  const maxY = Math.max(0, bounds.height - height);
+  const above = selection.y - height - gap;
+  const below = selection.y + selection.height + gap;
+  return {
+    x: clamp(selection.x, 0, maxX),
+    y: above >= 0 ? clamp(above, 0, maxY) : clamp(below, 0, maxY)
+  };
 }
 
 export function createCaptureController(elements, store, getSettings) {
@@ -31,7 +62,8 @@ export function createCaptureController(elements, store, getSettings) {
 
   function move(event) {
     const cursor = point(event);
-    store.dispatch({ type: "CAPTURE_MAGNIFIER_SET", point: getSettings().showMagnifierBorder ? { x: cursor.x + 20, y: cursor.y + 20 } : null });
+    const magnifierSize = { width: elements.magnifier.offsetWidth || 132, height: elements.magnifier.offsetHeight || 104 };
+    store.dispatch({ type: "CAPTURE_MAGNIFIER_SET", point: getSettings().showMagnifierBorder ? getMagnifierPosition(cursor, bounds(), magnifierSize) : null });
     if (!drag) {
       hoveredCandidate = store.getState().capture.freeOnly ? null : findCandidate(cursor, candidates);
       preview(hoveredCandidate);

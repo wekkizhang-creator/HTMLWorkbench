@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_SETTINGS } from "../public/pinshot/settings.mjs";
-import { createSettingsView, normalizeShortcut, setNestedSetting } from "../public/pinshot/settings-view.mjs";
+import { createSettingsView, ensureIconButtonTitles, normalizeShortcut, setNestedSetting } from "../public/pinshot/settings-view.mjs";
 
 test("shortcut recording normalizes modifiers and rejects browser default shortcuts", () => {
   assert.equal(normalizeShortcut({ key: "p", ctrlKey: true, shiftKey: true }), "Ctrl+Shift+P");
@@ -16,6 +16,19 @@ test("nested setting updates preserve neighbouring values", () => {
   assert.notEqual(next.mouseActions, DEFAULT_SETTINGS.mouseActions);
 });
 
+
+test("icon-only buttons receive a visible title from their accessible name", () => {
+  const buttons = [
+    { title: "", getAttribute: (name) => name === "aria-label" ? "Close settings" : null },
+    { title: "Existing", getAttribute: () => "Ignored" }
+  ];
+  const root = { querySelectorAll: (selector) => {
+    assert.equal(selector, "[data-icon-only]");
+    return buttons;
+  } };
+  ensureIconButtonTitles(root);
+  assert.deepEqual(buttons.map((button) => button.title), ["Close settings", "Existing"]);
+});
 test("settings wiring persists valid changes and exposes live capture and pin variables", async () => {
   const { readFile } = await import("node:fs/promises");
   const [app, css, pins] = await Promise.all([
@@ -26,6 +39,7 @@ test("settings wiring persists valid changes and exposes live capture and pin va
   assert.ok(app.indexOf("loadSettings(window.localStorage") < app.indexOf("createStore("));
   assert.match(app, /saveSettings\(window\.localStorage, next\)/);
   assert.match(app, /--capture-mask-opacity/);
+  assert.match(app, /onColorSample:\s*\(value\)\s*=>\s*\{\s*settingsView\.setValue\("annotationColor", value\);\s*\}/);
   assert.match(app, /--pin-opacity/);
   assert.match(css, /--capture-border-width/);
   assert.match(css, /--pin-shadow/);
@@ -77,9 +91,12 @@ function makeDialog() {
 test("settings controller synchronizes events, navigation, shortcuts, resets, and dialog state", () => {
   const fixture = makeDialog(); const changes = []; const resets = []; let closed = 0;
   const view = createSettingsView({ dialog: fixture.dialog, settings: { ...DEFAULT_SETTINGS, maskOpacity: 30, showMask: false }, onChange: (next) => changes.push(next), onReset: (next) => resets.push(next), onClose: () => { closed += 1; } });
+  view.setValue("annotationColor", "#123456");
+  assert.equal(view.getSettings().annotationColor, "#123456");
   fixture.fields[0].value = "-1"; fixture.dialog.fire("change", { target: fixture.fields[0] });
   assert.equal(changes.at(-1).maskOpacity, 10);
   assert.equal(view.getSettings().maskOpacity, 10);
+  assert.equal(changes.at(-1).annotationColor, "#123456");
   assert.equal(fixture.fields[0].value, 10);
   fixture.buttons[2].fire("click"); assert.equal(fixture.panels[2].hidden, false); assert.equal(fixture.panels[2].heading.focusCount, 1); assert.equal(fixture.buttons[2].getAttribute("aria-current"), "page");
   fixture.fields[2].fire("click"); fixture.fields[2].fire("keydown", { key: "F1" }); assert.equal(view.getSettings().shortcuts.paste, "F3"); assert.match(fixture.conflict.textContent, /\u51b2\u7a81/);

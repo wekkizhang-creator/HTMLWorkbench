@@ -1,12 +1,13 @@
-import { createCaptureController, getToolbarPosition } from "./capture.mjs";
-import { createCanvasController } from "./canvas.mjs";
+import { createCaptureController, getSizeLabelPosition, getToolbarPosition } from "./capture.mjs";
+import { annotationStyleFromSettings, createCanvasController } from "./canvas.mjs";
 import { DEFAULT_SETTINGS, loadSettings, resetSettings, saveSettings } from "./settings.mjs";
-import { createSettingsView } from "./settings-view.mjs";
+import { createSettingsView, ensureIconButtonTitles } from "./settings-view.mjs";
 import { createEscapeHandler, createKeyboardRouter } from "./keyboard.mjs";
 import { createInitialState, createStore } from "./state.mjs";
 import { canvasToBlob, createCompositeCanvas, createOutputRunner } from "./output.mjs";
 import { createPin, createPinActions, renderPins, resolvePinSource } from "./pins.mjs";
 import { dispatchFittedPin } from "./pin-creation.mjs";
+import { sampleDesktopSceneColor } from "./scene.mjs";
 
 const app = document.querySelector("#pinshotApp");
 if (!app) throw new Error("PinShot root is missing");
@@ -24,6 +25,8 @@ for (const button of toolbar.querySelectorAll("button")) {
   if (!button.hasAttribute("aria-pressed")) button.setAttribute("aria-pressed", "false");
   if (!button.dataset.tooltip) button.dataset.tooltip = button.getAttribute("aria-label") || "";
 }
+ensureIconButtonTitles(document);
+
 const toast = document.querySelector("#toast");
 const pinLayer = document.querySelector("#pinLayer");
 const historyStrip = document.querySelector("#historyStrip");
@@ -52,7 +55,18 @@ const annotationCanvas = createCanvasController({
   canvas,
   getSelection: () => store.getState().selection,
   getTool: () => store.getState().activeTool,
-  getStyle: () => ({ color: activeSettings.annotationColor, width: activeSettings.annotationWidth }),
+  getStyle: () => annotationStyleFromSettings(activeSettings),
+  sampleColor: (point) => {
+    const selection = store.getState().selection;
+    if (!selection) return null;
+    return sampleDesktopSceneColor(document, {
+      x: selection.x + point.x,
+      y: selection.y + point.y,
+      width: desktopScene.clientWidth,
+      height: desktopScene.clientHeight
+    });
+  },
+  onColorSample: (value) => { settingsView.setValue("annotationColor", value); },
   onCommit: (annotation) => store.dispatch({ type: "ANNOTATION_COMMIT", annotation })
 });
 
@@ -60,6 +74,7 @@ const runOutput = createOutputRunner({
   store,
   annotationCanvas: canvas,
   getViewport: () => ({ width: desktopScene.clientWidth, height: desktopScene.clientHeight }),
+  getOutputFormat: () => activeSettings.outputFormat,
   documentRef: document,
   closeCapture: () => { capture.cancel(); captureLauncher.focus(); }
 });
@@ -109,7 +124,11 @@ function render(state) {
   if (displayRect) {
     Object.assign(selectionBox.style, { left: `${displayRect.x}px`, top: `${displayRect.y}px`, width: `${displayRect.width}px`, height: `${displayRect.height}px` });
     sizeLabel.textContent = `${Math.round(displayRect.width)} × ${Math.round(displayRect.height)}`;
-    Object.assign(sizeLabel.style, { left: `${displayRect.x}px`, top: `${Math.max(0, displayRect.y - 30)}px` });
+    const labelPosition = getSizeLabelPosition(displayRect, sizeLabel, {
+      width: desktopScene.clientWidth,
+      height: desktopScene.clientHeight
+    });
+    Object.assign(sizeLabel.style, { left: `${labelPosition.x}px`, top: `${labelPosition.y}px` });
   }
   if (captureView.magnifier) Object.assign(magnifier.style, { left: `${captureView.magnifier.x}px`, top: `${captureView.magnifier.y}px` });
   Object.assign(toolbar.style, captureView.toolbarPosition ? { left: `${captureView.toolbarPosition.x}px`, top: `${captureView.toolbarPosition.y}px` } : { left: "", top: "" });

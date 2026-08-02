@@ -92,12 +92,19 @@ export function togglePinLock(pin) {
 export function togglePinCollapse(pin) {
   return { ...pin, collapsed: !pin.collapsed };
 }
+
+function pinBlobFormat(blob) {
+  const jpeg = blob?.type === "image/jpeg" || blob?.type === "image/jpg";
+  return jpeg ? { mimeType: "image/jpeg", extension: "jpg" } : { mimeType: "image/png", extension: "png" };
+}
+
 export function createPinActions({ clipboard, ClipboardItemRef, documentRef, URLRef, now = () => new Date() } = {}) {
   return {
     async copy(blob) {
       if (!blob || !clipboard?.write || typeof ClipboardItemRef !== "function") throw new Error(COPY_FAILURE_MESSAGE);
       try {
-        await clipboard.write([new ClipboardItemRef({ "image/png": blob })]);
+        const { mimeType } = pinBlobFormat(blob);
+        await clipboard.write([new ClipboardItemRef({ [mimeType]: blob })]);
       } catch {
         throw new Error(COPY_FAILURE_MESSAGE);
       }
@@ -106,7 +113,7 @@ export function createPinActions({ clipboard, ClipboardItemRef, documentRef, URL
       if (!blob || !documentRef?.createElement || !URLRef?.createObjectURL || !URLRef?.revokeObjectURL) throw new Error("\u65e0\u6cd5\u4fdd\u5b58\u8d34\u56fe");
       const link = documentRef.createElement("a");
       const url = URLRef.createObjectURL(blob);
-      link.download = buildDownloadName(now());
+      link.download = buildDownloadName(now(), pinBlobFormat(blob).extension);
       link.href = url;
       try {
         link.click();
@@ -174,16 +181,35 @@ function attachPinEvents(card, pin, dispatch, settings, viewport) {
       return;
     }
     if (event.button !== 0 || pin.locked) return;
-    drag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+    drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, nextX: pin.x, nextY: pin.y };
     card.setPointerCapture?.(event.pointerId);
   });
   card.addEventListener("pointermove", (event) => {
     if (!drag || drag.pointerId !== event.pointerId || pin.locked) return;
-    updatePin(dispatch, pin, { x: pin.x + event.clientX - drag.x, y: pin.y + event.clientY - drag.y }, viewport);
+    const bounded = clampPinPosition({
+      ...pin,
+      x: pin.x + event.clientX - drag.startX,
+      y: pin.y + event.clientY - drag.startY
+    }, viewport);
+    drag.nextX = bounded.x;
+    drag.nextY = bounded.y;
+    card.style.left = `${bounded.x}px`;
+    card.style.top = `${bounded.y}px`;
   });
-  const clearDrag = () => { drag = null; };
-  card.addEventListener("pointerup", clearDrag);
-  card.addEventListener("pointercancel", clearDrag);
+  const finishDrag = (event, commit) => {
+    if (!drag || (event?.pointerId != null && drag.pointerId !== event.pointerId)) return;
+    const completed = drag;
+    drag = null;
+    card.releasePointerCapture?.(completed.pointerId);
+    if (commit && (completed.nextX !== pin.x || completed.nextY !== pin.y)) {
+      dispatch({ type: "PIN_UPDATE", id: pin.id, patch: { x: completed.nextX, y: completed.nextY } });
+      return;
+    }
+    card.style.left = `${pin.x}px`;
+    card.style.top = `${pin.y}px`;
+  };
+  card.addEventListener("pointerup", (event) => finishDrag(event, true));
+  card.addEventListener("pointercancel", (event) => finishDrag(event, false));
   card.addEventListener("wheel", (event) => {
     const direction = event.deltaY < 0 ? 1 : -1;
     if (event.ctrlKey && configuredAction(settings, "pinOpacity") === "Ctrl+Wheel") {

@@ -2,8 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildDownloadName, canvasToBlob, copyCanvas, createCompositeCanvas, createOutputRunner } from "../public/pinshot/output.mjs";
 
-test("download names are deterministic PNG names", () => {
-  assert.equal(buildDownloadName(new Date("2026-08-01T08:09:07Z")), "PinShot-20260801-080907.png");
+test("download names use the selected deterministic output extension", () => {
+  const date = new Date("2026-08-01T08:09:07Z");
+  assert.equal(buildDownloadName(date), "PinShot-20260801-080907.png");
+  assert.equal(buildDownloadName(date, "jpg"), "PinShot-20260801-080907.jpg");
+});
+
+test("canvas encoding honors the selected JPG output format", async () => {
+  const calls = [];
+  const canvas = { toBlob(callback, mimeType, quality) { calls.push({ mimeType, quality }); callback({ type: mimeType }); } };
+  const blob = await canvasToBlob(canvas, "jpg");
+  assert.equal(blob.type, "image/jpeg");
+  assert.deepEqual(calls, [{ mimeType: "image/jpeg", quality: 0.92 }]);
 });
 
 test("canvasToBlob rejects when the browser returns no blob", async () => {
@@ -87,6 +97,28 @@ test("successful output announces copy and save in Chinese", async () => {
     assert.equal(dispatched.at(-1).type, "TOAST_SHOW");
     assert.equal(dispatched.at(-1).message, message);
   }
+});
+
+test("save output forwards the current format setting", async () => {
+  let receivedFormat = "";
+  const runOutput = createOutputRunner({
+    store: { getState: selectedState, dispatch: () => {} },
+    annotationCanvas: { id: "annotations" },
+    getViewport: () => ({ width: 1440, height: 900 }),
+    getOutputFormat: () => "jpg",
+    createComposite: () => ({ id: "composite" }),
+    output: {
+      downloadCanvas: async (_canvas, _documentRef, format) => {
+        receivedFormat = format;
+        return { type: "image/jpeg" };
+      }
+    }
+  });
+
+  const result = await runOutput("save");
+  assert.equal(result.ok, true);
+  assert.equal(receivedFormat, "jpg");
+  assert.equal(result.blob.type, "image/jpeg");
 });
 
 test("composite uses the full DPR annotation backing store before scaling", () => {

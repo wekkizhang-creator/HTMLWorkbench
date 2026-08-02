@@ -1,5 +1,13 @@
 import { annotationFromGesture } from "./annotations.mjs";
 
+export function annotationStyleFromSettings(settings = {}) {
+  return {
+    color: settings.annotationColor || "#4C8DFF",
+    width: Number(settings.annotationWidth) || 3,
+    fontSize: Number(settings.annotationFontSize) || 18
+  };
+}
+
 function line(ctx, points) {
   ctx.beginPath();
   points.forEach((point, index) => index ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y));
@@ -51,6 +59,8 @@ export function renderAnnotations(ctx, annotations) {
       }
     }
     if (item.type === "color") {
+      ctx.fillStyle = item.value || item.color;
+      ctx.fillRect(item.x - 8, item.y - 8, 16, 16);
       ctx.strokeStyle = "#fff";
       ctx.strokeRect(item.x - 10, item.y - 10, 20, 20);
     }
@@ -63,7 +73,7 @@ function localPoint(event, selection) {
   return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
 }
 
-export function createCanvasController({ canvas, getSelection, getTool, getStyle, onCommit }) {
+export function createCanvasController({ canvas, getSelection, getTool, getStyle, sampleColor = () => null, onColorSample = () => {}, onCommit }) {
   let gesture = null;
   let input = null;
   let activeTextInput = null;
@@ -130,7 +140,13 @@ export function createCanvasController({ canvas, getSelection, getTool, getStyle
     const end = localPoint(event, getSelection());
     const { tool, start, points } = gesture;
     gesture = null;
-    const annotation = annotationFromGesture(tool, start, end, { ...getStyle(), points, id: crypto.randomUUID() });
+    const style = { ...getStyle(), points, id: crypto.randomUUID() };
+    if (tool === "color") {
+      const value = sampleColor(end);
+      if (value) Object.assign(style, { color: value, value });
+      if (value) onColorSample(value);
+    }
+    const annotation = annotationFromGesture(tool, start, end, style);
     onCommit(annotation);
     draw();
   }

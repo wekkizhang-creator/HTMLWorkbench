@@ -3,6 +3,13 @@ import { DEFAULT_SETTINGS, findShortcutConflict, sanitizeSettings } from "./sett
 const clone = (value) => structuredClone(value);
 const blockedShortcuts = new Set(["Ctrl+S", "Ctrl+P", "Ctrl+W", "Ctrl+T", "Ctrl+L", "Alt+Left", "Alt+Right"]);
 
+export function ensureIconButtonTitles(root) {
+  for (const button of root.querySelectorAll("[data-icon-only]")) {
+    if (!button.title) button.title = button.getAttribute("aria-label") || "";
+  }
+}
+
+
 export function normalizeShortcut(event) {
   const key = event.key?.length === 1 ? event.key.toUpperCase() : event.key;
   if (!key || ["Control", "Shift", "Alt", "Meta"].includes(key)) return null;

@@ -5,15 +5,35 @@ export const COPY_SUCCESS_MESSAGE = "\u5df2\u590d\u5236\u5230\u526a\u8d34\u677f"
 export const SAVE_SUCCESS_MESSAGE = "\u622a\u56fe\u5df2\u4fdd\u5b58";
 
 
-export function buildDownloadName(date = new Date()) {
-  const digits = (value) => String(value).padStart(2, "0");
-  return `PinShot-${date.getUTCFullYear()}${digits(date.getUTCMonth() + 1)}${digits(date.getUTCDate())}-${digits(date.getUTCHours())}${digits(date.getUTCMinutes())}${digits(date.getUTCSeconds())}.png`;
+export function normalizeOutputFormat(format) {
+  return String(format).toLowerCase() === "jpg" ? "jpg" : "png";
 }
 
-export function canvasToBlob(canvas) {
+function outputSpec(format) {
+  const normalized = normalizeOutputFormat(format);
+  return normalized === "jpg" ? { extension: "jpg", mimeType: "image/jpeg", quality: 0.92, label: "JPG" } : { extension: "png", mimeType: "image/png", quality: undefined, label: "PNG" };
+}
+
+export function buildDownloadName(date = new Date(), format = "png") {
+  const digits = (value) => String(value).padStart(2, "0");
+  const { extension } = outputSpec(format);
+  return `PinShot-${date.getUTCFullYear()}${digits(date.getUTCMonth() + 1)}${digits(date.getUTCDate())}-${digits(date.getUTCHours())}${digits(date.getUTCMinutes())}${digits(date.getUTCSeconds())}.${extension}`;
+}
+
+function canvasToPngBlob(canvas) {
   return new Promise((resolve, reject) => canvas.toBlob(
     (blob) => blob ? resolve(blob) : reject(new Error("无法生成 PNG")),
     "image/png"
+  ));
+}
+
+export function canvasToBlob(canvas, format = "png") {
+  if (normalizeOutputFormat(format) === "png") return canvasToPngBlob(canvas);
+  const { mimeType, quality, label } = outputSpec(format);
+  return new Promise((resolve, reject) => canvas.toBlob(
+    (blob) => blob ? resolve(blob) : reject(new Error(`\u65e0\u6cd5\u751f\u6210 ${label}`)),
+    mimeType,
+    quality
   ));
 }
 
@@ -30,11 +50,11 @@ export async function copyCanvas(canvas, clipboard = navigator.clipboard) {
   return blob;
 }
 
-export async function downloadCanvas(canvas, documentRef = document) {
-  const blob = await canvasToBlob(canvas);
+export async function downloadCanvas(canvas, documentRef = document, format = "png") {
+  const blob = await canvasToBlob(canvas, format);
   const link = documentRef.createElement("a");
   const url = URL.createObjectURL(blob);
-  link.download = buildDownloadName();
+  link.download = buildDownloadName(new Date(), format);
   link.href = url;
   try {
     link.click();
@@ -62,6 +82,7 @@ export function createOutputRunner({
   store,
   annotationCanvas,
   getViewport,
+  getOutputFormat = () => "png",
   documentRef,
   createComposite = createCompositeCanvas,
   output = { copyCanvas, downloadCanvas },
@@ -75,7 +96,7 @@ export function createOutputRunner({
     const composite = createComposite(annotationCanvas, state.selection, getViewport(), documentRef);
     try {
       const blob = command === "save"
-        ? await output.downloadCanvas(composite, documentRef)
+        ? await output.downloadCanvas(composite, documentRef, getOutputFormat())
         : await output.copyCanvas(composite);
       const createdAt = now();
       store.dispatch({

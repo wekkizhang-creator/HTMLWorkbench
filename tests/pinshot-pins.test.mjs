@@ -188,6 +188,26 @@ test("image pointer drag moves an unlocked card while a locked card stays fixed"
   assert.deepEqual(actions, []);
 });
 
+test("pin drag survives multiple pointer moves and commits the final bounded position once", () => {
+  const { pinLayer } = createFakeDom();
+  pinLayer.clientWidth = 800;
+  pinLayer.clientHeight = 600;
+  const actions = [];
+  renderPins(pinLayer, [createPin({ id: "continuous", x: 80, y: 80 })], (action) => actions.push(action), { mouseActions });
+  const card = pinLayer.children[0];
+
+  card.emit("pointerdown", { button: 0, pointerId: 9, clientX: 100, clientY: 100 });
+  card.emit("pointermove", { pointerId: 9, clientX: 130, clientY: 140 });
+  card.emit("pointermove", { pointerId: 9, clientX: 900, clientY: 900 });
+
+  assert.deepEqual(actions, []);
+  assert.equal(card.style.left, "480px");
+  assert.equal(card.style.top, "420px");
+
+  card.emit("pointerup", { pointerId: 9 });
+  assert.deepEqual(actions, [{ type: "PIN_UPDATE", id: "continuous", patch: { x: 480, y: 420 } }]);
+});
+
 test("pin drag and wheel routes dispatch pin updates while locked cards ignore drag", () => {
   const { pinLayer } = createFakeDom();
   const actions = [];
@@ -401,4 +421,29 @@ test("injected pin actions write image clipboard data and always revoke download
   assert.deepEqual(downloads, ["clicked"]);
   assert.deepEqual(revoked, ["blob:download"]);
   await assert.rejects(createPinActions({ clipboard: {}, ClipboardItemRef: TestClipboardItem }).copy(blob), /\u590d\u5236\u5931\u8d25.*\u8bf7\u4f7f\u7528\u4fdd\u5b58/);
+});
+
+test("JPEG pin actions preserve MIME type and download extension", async () => {
+  const blob = { type: "image/jpeg" };
+  const writes = [];
+  const links = [];
+  class TestClipboardItem { constructor(value) { this.value = value; } }
+  const actions = createPinActions({
+    clipboard: { write: async (items) => writes.push(items) },
+    ClipboardItemRef: TestClipboardItem,
+    documentRef: {
+      createElement: () => {
+        const link = { click() {} };
+        links.push(link);
+        return link;
+      }
+    },
+    URLRef: { createObjectURL: () => "blob:jpeg", revokeObjectURL() {} },
+    now: () => new Date("2026-08-01T08:09:07Z")
+  });
+  await actions.copy(blob);
+  await actions.save(blob);
+  assert.equal(writes[0][0].value["image/jpeg"], blob);
+  assert.equal(Object.hasOwn(writes[0][0].value, "image/png"), false);
+  assert.equal(links[0].download, "PinShot-20260801-080907.jpg");
 });
