@@ -203,3 +203,12 @@ test("Vercel routing middleware enforces the host decision before filesystem and
   assert.match(middleware, /status:\s*307/);
   assert.match(middleware, /next\(\)/);
 });
+
+test("Vercel routes editor source requests before generic upload records", async () => {
+  const config = JSON.parse(await fs.readFile("vercel.json", "utf8"));
+  const editorRoute = config.rewrites.findIndex((route) => route.source === "/api/uploads/:id/content");
+  const recordRoute = config.rewrites.findIndex((route) => route.source === "/api/uploads/:id");
+  assert.ok(editorRoute >= 0);
+  assert.ok(editorRoute < recordRoute);
+  assert.equal(config.rewrites[editorRoute].destination, "/api/edit-upload?id=:id");
+});

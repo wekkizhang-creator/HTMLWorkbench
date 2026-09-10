@@ -35,6 +35,7 @@ const API_MODULES = {
   uploads: pathToFileURL(path.join(ROOT_DIR, "api", "uploads.mjs")).href,
   health: pathToFileURL(path.join(ROOT_DIR, "api", "health.mjs")).href,
   deleteUpload: pathToFileURL(path.join(ROOT_DIR, "api", "delete-upload.mjs")).href,
+  editUpload: pathToFileURL(path.join(ROOT_DIR, "api", "edit-upload.mjs")).href,
   view: pathToFileURL(path.join(ROOT_DIR, "api", "view.mjs")).href
 };
 
@@ -448,7 +449,7 @@ async function route(req, res) {
     await callApiModule("downloadWidget", req, res, url);
     return;
   }
-  if ((pathname === "/" || pathname === "/index.html") && !(await isAuthorizedRequest(req))) {
+  if ((pathname === "/" || pathname === "/index.html" || pathname === "/editor.html") && !(await isAuthorizedRequest(req))) {
     redirectToLogin(req, res);
     return;
   }
@@ -459,6 +460,18 @@ async function route(req, res) {
       return;
     }
     await callApiModule("uploads", req, res, url);
+    return;
+  }
+
+  const editMatch = pathname.match(/^\/api\/uploads\/([0-9a-f-]{36})\/content$/i);
+  if (editMatch) {
+    if (!(await isAuthorizedRequest(req))) {
+      rejectUnauthorizedRequest(req, res);
+      return;
+    }
+    url.pathname = "/api/edit-upload";
+    url.searchParams.set("id", editMatch[1]);
+    await callApiModule("editUpload", req, res, url);
     return;
   }
 

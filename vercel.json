@@ -19,6 +19,10 @@
       "destination": "/api/view?id=:id"
     },
     {
+      "source": "/api/uploads/:id/content",
+      "destination": "/api/edit-upload?id=:id"
+    },
+    {
       "source": "/api/uploads/:id",
       "destination": "/api/delete-upload?id=:id"
     }
