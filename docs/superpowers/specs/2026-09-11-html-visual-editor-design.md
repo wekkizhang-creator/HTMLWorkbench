@@ -69,7 +69,7 @@
 - 将文档写入 sandbox="allow-same-origin" 的 iframe，不授予 allow-scripts、表单提交、弹窗或顶层导航能力。
 - 拦截画布内链接和表单默认行为，避免编辑时离开画布。
 - 原 script 节点保留在 DOM 中，但因沙箱配置不执行。
-- 保存前移除节点 ID、选中态、contenteditable 和编辑器注入的临时节点。
+- 保存前移除节点 ID、选中态和编辑器注入的临时节点，并恢复编辑器临时改动过的 contenteditable 与 spellcheck 属性原值。
 - 保留原 doctype，并序列化完整文档。
 
 ### 智能模块选择
