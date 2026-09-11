@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HTML 编辑器 · HTML 发布台</title>
+  <link rel="icon" href="/brand-logo.png">
+  <link rel="stylesheet" href="/editor.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" id="backLink" href="/" title="返回发布台"><img src="/brand-logo.png" alt="HTML 发布台"><span>HTML 编辑器</span></a>
+    <div class="document-heading"><h1 id="documentTitle">载入文档</h1><span id="saveState" role="status">等待载入</span></div>
+    <div class="actions">
+      <button id="undoButton" class="icon-button" title="撤销" aria-label="撤销" disabled><svg viewBox="0 0 24 24"><path d="m9 5-5 5 5 5M4 10h10a6 6 0 0 1 0 12"/></svg></button>
+      <button id="redoButton" class="icon-button" title="重做" aria-label="重做" disabled><svg viewBox="0 0 24 24"><path d="m15 5 5 5-5 5m5-5H10a6 6 0 0 0 0 12"/></svg></button>
+      <button id="previewButton" class="icon-button" title="预览已发布页面" aria-label="预览已发布页面" disabled><svg viewBox="0 0 24 24"><path d="M14 3h7v7m0-7L10 14M10 3H3v18h18v-7"/></svg></button>
+      <button id="saveButton" class="primary" disabled><svg viewBox="0 0 24 24"><path d="M5 3h12l4 4v14H3V3h2Zm2 0v7h10V3M7 21v-7h10v7"/></svg><span>保存并发布</span></button>
+    </div>
+  </header>
+  <div class="message" id="message" role="alert" hidden></div>
+  <main class="workbench" id="workbench" data-drawer="">
+    <button id="drawerBackdrop" class="drawer-backdrop" aria-label="关闭侧栏" tabindex="-1"></button>
+    <aside class="module-panel" id="treePanel" aria-label="模块">
+      <div class="panel-heading"><h2>模块</h2><button class="icon-button mobile-only" data-close-drawer title="关闭模块" aria-label="关闭模块">×</button></div>
+      <nav id="moduleTree" aria-label="文档模块"></nav>
+    </aside>
+    <section class="canvas-panel" aria-label="编辑画布">
+      <div class="canvas-toolbar">
+        <button id="treeToggle" class="icon-button mobile-only" aria-label="打开模块" title="模块" aria-controls="treePanel" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg></button>
+        <nav id="breadcrumbs" aria-label="选中元素路径"></nav>
+        <div class="canvas-tools">
+          <button id="parentButton" class="icon-button" title="选择父级" aria-label="选择父级" disabled><svg viewBox="0 0 24 24"><path d="m6 11 6-6 6 6m-6-6v14"/></svg></button>
+          <button id="childButton" class="icon-button" title="选择子级" aria-label="选择子级" disabled><svg viewBox="0 0 24 24"><path d="m6 13 6 6 6-6m-6 6V5"/></svg></button>
+          <button id="inspectorToggle" class="icon-button mobile-only" title="属性" aria-label="打开属性" aria-controls="inspectorPanel" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 17h16M8 4v6m8 4v6"/></svg></button>
+        </div>
+      </div>
+      <div class="canvas-viewport" id="canvasViewport">
+        <iframe id="editorCanvas" title="HTML 编辑画布" sandbox="allow-same-origin" referrerpolicy="no-referrer"></iframe>
+        <div id="hoverOutline" class="outline hover-outline" hidden></div>
+        <div id="selectionOutline" class="outline selection-outline" hidden></div>
+        <div id="loadState" class="load-state" role="status"><span id="loadMessage">正在载入文档…</span><button id="retryButton" hidden>重试</button></div>
+      </div>
+      <footer class="canvas-footer"><span id="selectionLabel">未选择元素</span><span id="documentSize">--</span></footer>
+    </section>
+    <aside class="inspector-panel" id="inspectorPanel" aria-label="属性">
+      <div class="panel-heading"><h2>属性</h2><button class="icon-button mobile-only" data-close-drawer title="关闭属性" aria-label="关闭属性">×</button></div>
+      <p id="inspectorEmpty" class="empty-label">未选择元素</p>
+      <fieldset id="styleInspector" disabled hidden>
+        <legend class="sr-only">元素样式</legend>
+        <section class="control-section"><h3>文字</h3>
+          <label class="wide">字体<input data-style="font-family" aria-label="字体" placeholder="继承"></label>
+          <div class="control-grid">
+            <label>字号<input data-style="font-size" aria-label="字号" placeholder="16px"></label>
+            <label>字重<select data-style="font-weight" aria-label="字重"><option value="">继承</option><option value="400">常规</option><option value="500">中等</option><option value="600">半粗</option><option value="700">粗体</option></select></label>
+            <label>行高<input data-style="line-height" aria-label="行高" placeholder="normal"></label>
+            <label>对齐<select data-style="text-align" aria-label="对齐"><option value="">继承</option><option value="left">左</option><option value="center">中</option><option value="right">右</option><option value="justify">两端</option><option value="start">起始</option></select></label>
+          </div>
+          <label class="color-control">文字颜色<input type="color" data-color="color" aria-label="文字颜色色板"><input data-style="color" aria-label="文字颜色" placeholder="继承"></label>
+          <label class="color-control">背景颜色<input type="color" data-color="background-color" aria-label="背景颜色色板"><input data-style="background-color" aria-label="背景颜色" placeholder="transparent"></label>
+        </section>
+        <section class="control-section"><h3>布局与间距</h3><div class="control-grid">
+          <label>宽度<input data-style="width" aria-label="宽度" placeholder="auto"></label><label>高度<input data-style="height" aria-label="高度" placeholder="auto"></label>
+          <label>内边距<input data-style="padding" aria-label="内边距" placeholder="0px"></label><label>外边距<input data-style="margin" aria-label="外边距" placeholder="0px"></label>
+          <label>布局<select data-style="display" aria-label="布局"><option value="">默认</option><option>block</option><option>inline</option><option>inline-block</option><option>flex</option><option>grid</option><option>none</option></select></label>
+          <label>间隔<input data-style="gap" aria-label="间隔" placeholder="normal"></label>
+        </div></section>
+        <section class="control-section"><h3>外观</h3>
+          <label class="wide">边框<input data-style="border" aria-label="边框" placeholder="none"></label>
+          <div class="control-grid"><label>圆角<input data-style="border-radius" aria-label="圆角" placeholder="0px"></label><label>不透明度<input data-style="opacity" type="number" min="0" max="1" step="0.05" aria-label="不透明度" placeholder="1"></label></div>
+        </section>
+        <details class="control-section"><summary>高级 CSS</summary><textarea id="advancedCss" aria-label="高级 CSS" rows="7" spellcheck="false"></textarea><button id="applyCssButton" type="button">应用 CSS</button></details>
+        <div class="control-section"><button id="deleteButton" class="danger" type="button"><svg viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></svg>删除元素</button></div>
+      </fieldset>
+    </aside>
+  </main>
+  <script type="module" src="/editor.js"></script>
+</body>
+</html>

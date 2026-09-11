@@ -14,7 +14,7 @@ import {
 
 export async function GET(request) {
   try {
-    const failure = await managementRequestFailure(request, { requireCsrf: false });
+    const failure = await managementRequestFailure(request, { requireCsrf: false, allowSameOriginGet: true });
     if (failure) return error(failure.message, failure.status);
 
     const { htmlBuffer, record } = await getEditableContent(request);

@@ -145,7 +145,7 @@ async function authorizedRequest(server, method, pathname, options = {}) {
     body: options.body,
     headers: {
       Cookie: cookie,
-      Origin: "https://ho.wekki.fun",
+      ...(options.omitOrigin ? {} : { Origin: "https://ho.wekki.fun" }),
       "X-CSRF-Token": csrfToken,
       ...options.headers
     },
@@ -168,6 +168,48 @@ test("editor versions change with record state or content", async () => {
     createEditorVersion(record, Buffer.from("<h1>A</h1>")),
     createEditorVersion({ ...record, uploadedAt: "2026-09-12T00:00:00.000Z" }, Buffer.from("<h1>A</h1>"))
   );
+});
+
+test("editor source accepts authenticated same-origin browser GET without Origin", async () => {
+  const server = await startServer({
+    HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",
+    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun"
+  });
+  try {
+    const response = await authorizedRequest(server, "GET", `/api/uploads/${TEST_ID}/content`, {
+      omitOrigin: true, headers: { "Sec-Fetch-Site": "same-origin" }
+    });
+    assert.equal(response.status, 200);
+    assert.match(response.json.html, /Original/);
+    const unauthenticated = await request(server.origin, "GET", `/api/uploads/${TEST_ID}/content`, {
+      host: server.host, headers: { "Sec-Fetch-Site": "same-origin" }
+    });
+    assert.equal(unauthenticated.status, 401);
+  } finally { await server.close(); }
+});
+
+test("Origin-free editor GET exception rejects other sites and never applies to writes", async () => {
+  const server = await startServer({
+    HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",
+    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun"
+  });
+  try {
+    for (const site of ["same-site", "cross-site", "none", ""]) {
+      const response = await authorizedRequest(server, "GET", `/api/uploads/${TEST_ID}/content`, {
+        omitOrigin: true, headers: { "Sec-Fetch-Site": site }
+      });
+      assert.equal(response.status, 403, site);
+    }
+    const conflictingOrigin = await authorizedRequest(server, "GET", `/api/uploads/${TEST_ID}/content`, {
+      headers: { Origin: "https://page.wekki.fun", "Sec-Fetch-Site": "same-origin" }
+    });
+    assert.equal(conflictingOrigin.status, 403);
+    const write = await authorizedRequest(server, "PUT", `/api/uploads/${TEST_ID}/content`, {
+      omitOrigin: true, body: "<h1>Rejected</h1>",
+      headers: { "Sec-Fetch-Site": "same-origin", "Content-Type": "text/html", "If-Match": '"anything"' }
+    });
+    assert.equal(write.status, 403);
+  } finally { await server.close(); }
 });
 
 test("editor helper permits HTML records and rejects missing or ZIP records", async () => {
