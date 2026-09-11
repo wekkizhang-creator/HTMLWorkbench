@@ -209,3 +209,11 @@ test("HEAD returns selected static headers without a response body", async () =>
     assert.equal(response.body.length, 0);
   });
 });
+
+test("ES modules are served as JavaScript", async () => {
+  await withServer(async (origin) => {
+    const response = await request(origin, "/editor-core.mjs");
+    assert.equal(response.status, 200);
+    assert.equal(response.headers["content-type"], "text/javascript; charset=utf-8");
+  });
+});
