@@ -75,6 +75,25 @@ function fakeDocument(body) {
   };
 }
 
+function cloneFakeElement(element) {
+  const clone = fakeElement(element.tagName.toLowerCase(), null, Object.fromEntries(element._attributes));
+  clone.textContent = element.textContent;
+  for (const child of element.children) {
+    clone.appendChild(cloneFakeElement(child));
+  }
+  return clone;
+}
+
+function cloneFakeDocument(document) {
+  const documentElement = cloneFakeElement(document.documentElement);
+  return {
+    body: documentElement.children.find((element) => element.tagName === "BODY"),
+    head: documentElement.children.find((element) => element.tagName === "HEAD"),
+    documentElement,
+    doctype: { ...document.doctype }
+  };
+}
+
 test("smart selection chooses a meaningful block and protects document roots", () => {
   const body = fakeElement("body");
   const section = fakeElement("section", body);
@@ -127,8 +146,8 @@ test("transient IDs stay inside body and cleanup restores original edit attribut
   const temporaryEditable = fakeElement("span", originalEditable);
   const document = fakeDocument(body);
 
-  assignEditorNodeIds(document);
-  const editorStyle = fakeElement("style", body, { "data-hwb-editor-ui": "true" });
+  const editorToken = assignEditorNodeIds(document);
+  const editorStyle = fakeElement("style", body, { "data-hwb-editor-ui": editorToken });
   assert.equal(body.hasAttribute("data-hwb-editor-id"), false);
   assert.match(originalEditable.getAttribute("data-hwb-editor-id"), /^hwb-/);
   temporaryEditable.setAttribute("data-hwb-selected", "true");
@@ -149,7 +168,7 @@ test("transient IDs stay inside body and cleanup restores original edit attribut
   assert.equal(editorStyle.removed, true);
 });
 
-test("serialization removes editor state while preserving uploaded marker collisions", () => {
+test("clone serialization removes editor state while preserving uploaded marker collisions", () => {
   const body = fakeElement("body");
   const section = fakeElement("section", body, {
     contenteditable: "plaintext-only",
@@ -166,21 +185,51 @@ test("serialization removes editor state while preserving uploaded marker collis
   const uploadedScript = fakeElement("script", document.head);
   uploadedScript.textContent = "window.keep = true;";
 
-  assignEditorNodeIds(document);
+  const editorToken = assignEditorNodeIds(document);
   section.setAttribute("data-hwb-selected", "true");
   section.setAttribute("contenteditable", "true");
   section.setAttribute("spellcheck", "true");
   temporaryEditable.setAttribute("data-hwb-selected", "true");
   temporaryEditable.setAttribute("contenteditable", "true");
   temporaryEditable.setAttribute("spellcheck", "true");
-  const editorStyle = fakeElement("style", body, { "data-hwb-editor-ui": "true" });
+  const editorStyle = fakeElement("style", body, { "data-hwb-editor-ui": editorToken });
   editorStyle.textContent = ".editor-outline { outline: 1px solid red; }";
+  const clone = cloneFakeDocument(document);
+
+  assert.equal(
+    serializeDocument(clone, "html"),
+    '<!DOCTYPE html>\n<html><head><style data-hwb-editor-ui="uploaded-style">.uploaded { color: teal; }</style><script>window.keep = true;</script></head><body><section contenteditable="plaintext-only" spellcheck="false" data-business="keep" data-hwb-editor-id="uploaded-id" data-hwb-selected="uploaded-selection" data-hwb-editor-ui="uploaded-marker"><span></span></section></body></html>'
+  );
+  assert.equal(section.getAttribute("contenteditable"), "true");
+  assert.equal(editorStyle.removed, undefined);
+});
+
+test("post-setup nodes restore their original collisions during serialization", () => {
+  const body = fakeElement("body");
+  const document = fakeDocument(body);
+  assignEditorNodeIds(document);
+
+  const createdSection = fakeElement("section", body, {
+    contenteditable: "plaintext-only",
+    spellcheck: "false",
+    "data-hwb-editor-id": "created-id",
+    "data-hwb-selected": "created-selection",
+    "data-hwb-editor-ui": "created-marker",
+    "data-business": "keep"
+  });
+  const createdChild = fakeElement("span", createdSection);
+  assignEditorNodeIds(document);
+  createdSection.setAttribute("contenteditable", "true");
+  createdSection.setAttribute("spellcheck", "true");
+  createdSection.setAttribute("data-hwb-selected", "true");
+  createdChild.setAttribute("contenteditable", "true");
+  createdChild.setAttribute("spellcheck", "true");
+  createdChild.setAttribute("data-hwb-selected", "true");
 
   assert.equal(
     serializeDocument(document, "html"),
-    '<!DOCTYPE html>\n<html><head><style data-hwb-editor-ui="uploaded-style">.uploaded { color: teal; }</style><script>window.keep = true;</script></head><body><section contenteditable="plaintext-only" spellcheck="false" data-business="keep" data-hwb-editor-id="uploaded-id" data-hwb-selected="uploaded-selection" data-hwb-editor-ui="uploaded-marker"><span></span></section></body></html>'
+    '<!DOCTYPE html>\n<html><head></head><body><section contenteditable="plaintext-only" spellcheck="false" data-hwb-editor-id="created-id" data-hwb-selected="created-selection" data-hwb-editor-ui="created-marker" data-business="keep"><span></span></section></body></html>'
   );
-  assert.equal(editorStyle.removed, true);
 });
 
 test("cleanup removes only style nodes injected after editor setup", () => {
@@ -189,8 +238,9 @@ test("cleanup removes only style nodes injected after editor setup", () => {
   const userElement = fakeElement("div", body, { "data-hwb-editor-ui": "uploaded-element" });
   const document = fakeDocument(body);
 
+  const editorToken = assignEditorNodeIds(document);
+  const editorStyle = fakeElement("style", body, { "data-hwb-editor-ui": editorToken });
   assignEditorNodeIds(document);
-  const editorStyle = fakeElement("style", body, { "data-hwb-editor-ui": "true" });
   scrubEditorArtifacts(document);
 
   assert.equal(editorStyle.removed, true);

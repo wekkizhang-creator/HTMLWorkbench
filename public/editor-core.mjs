@@ -16,10 +16,21 @@ const SEMANTIC_BLOCK_TAGS = new Set([
 const HEADING_TAGS = new Set(["H1", "H2", "H3", "H4", "H5", "H6"]);
 const EDITOR_ID_ATTRIBUTE = "data-hwb-editor-id";
 const EDITOR_UI_ATTRIBUTE = "data-hwb-editor-ui";
+const EDITOR_STATE_ATTRIBUTE = "data-hwb-editor-state";
+const EDITOR_NODE_KEY_ATTRIBUTE = "data-hwb-editor-node-key";
 const TRANSIENT_ATTRIBUTES = [EDITOR_ID_ATTRIBUTE, "data-hwb-selected"];
-const RESTORED_ATTRIBUTES = ["contenteditable", "spellcheck", ...TRANSIENT_ATTRIBUTES, EDITOR_UI_ATTRIBUTE];
+const RESTORED_ATTRIBUTES = [
+  "contenteditable",
+  "spellcheck",
+  ...TRANSIENT_ATTRIBUTES,
+  EDITOR_UI_ATTRIBUTE,
+  EDITOR_STATE_ATTRIBUTE,
+  EDITOR_NODE_KEY_ATTRIBUTE
+];
 const editorDocumentState = new WeakMap();
+const editorStatesByToken = new Map();
 const MAX_HISTORY_COMMANDS = 100;
+let nextEditorToken = 1;
 
 function tagNameOf(element) {
   return typeof element?.tagName === "string" ? element.tagName.toUpperCase() : "";
@@ -56,18 +67,61 @@ function allDocumentElements(document) {
   return elements;
 }
 
-function captureDocumentState(document) {
-  if (editorDocumentState.has(document)) return;
+function createEditorToken() {
+  let token;
+  do {
+    token = `hwb-state-${nextEditorToken}`;
+    nextEditorToken += 1;
+  } while (editorStatesByToken.has(token));
+  return token;
+}
 
-  const elements = allDocumentElements(document);
-  const originalAttributes = new Map();
-  for (const element of elements) {
-    originalAttributes.set(
-      element,
-      Object.fromEntries(RESTORED_ATTRIBUTES.map((attribute) => [attribute, readAttribute(element, attribute)]))
-    );
+function isEditorUiNode(element, state) {
+  return element?.getAttribute?.(EDITOR_UI_ATTRIBUTE) === state.token;
+}
+
+function captureElementState(element, state) {
+  const key = `${state.token}-node-${state.nextNodeKey}`;
+  state.nextNodeKey += 1;
+  state.originalAttributes.set(
+    key,
+    Object.fromEntries(RESTORED_ATTRIBUTES.map((attribute) => [attribute, readAttribute(element, attribute)]))
+  );
+  state.elementKeys.set(element, key);
+  element.setAttribute(EDITOR_NODE_KEY_ATTRIBUTE, key);
+}
+
+function captureNewElements(document, state, { initial = false } = {}) {
+  for (const element of allDocumentElements(document)) {
+    if (state.elementKeys.has(element)) continue;
+    if (!initial && isEditorUiNode(element, state)) continue;
+    captureElementState(element, state);
   }
-  editorDocumentState.set(document, { originalAttributes, originalElements: new Set(elements) });
+}
+
+function createDocumentState(document) {
+  const token = createEditorToken();
+  const state = {
+    elementKeys: new WeakMap(),
+    nextNodeKey: 1,
+    originalAttributes: new Map(),
+    sourceDocument: document,
+    token
+  };
+  editorDocumentState.set(document, state);
+  editorStatesByToken.set(token, state);
+
+  // Token and node-key attributes survive cloning; their original values remain out of band.
+  captureNewElements(document, state, { initial: true });
+  document?.documentElement?.setAttribute?.(EDITOR_STATE_ATTRIBUTE, token);
+  return state;
+}
+
+function stateForDocument(document) {
+  const directState = editorDocumentState.get(document);
+  if (directState) return directState;
+  const token = document?.documentElement?.getAttribute?.(EDITOR_STATE_ATTRIBUTE);
+  return token ? editorStatesByToken.get(token) : undefined;
 }
 
 function readAttribute(element, name) {
@@ -143,37 +197,42 @@ export function labelForElement(element) {
 }
 
 export function assignEditorNodeIds(document) {
-  captureDocumentState(document);
+  const state = editorDocumentState.get(document) || createDocumentState(document);
+  captureNewElements(document, state);
   const elements = bodyDescendants(document);
 
   let nextId = 1;
   for (const element of elements) {
+    if (isEditorUiNode(element, state)) continue;
     element.setAttribute(EDITOR_ID_ATTRIBUTE, `hwb-${nextId}`);
     nextId += 1;
   }
+  return state.token;
 }
 
 export function scrubEditorArtifacts(document) {
-  const state = editorDocumentState.get(document);
-  for (const element of allDocumentElements(document)) {
-    if (
-      state
-      && tagNameOf(element) === "STYLE"
-      && !state.originalElements.has(element)
-      && element.hasAttribute?.(EDITOR_UI_ATTRIBUTE)
-    ) {
-      element.remove?.();
-      continue;
-    }
+  const state = stateForDocument(document);
+  if (!state) return;
 
-    const original = state?.originalAttributes.get(element);
+  for (const element of allDocumentElements(document)) {
+    const key = element.getAttribute?.(EDITOR_NODE_KEY_ATTRIBUTE);
+    const original = key ? state.originalAttributes.get(key) : undefined;
     if (original) {
       for (const attribute of RESTORED_ATTRIBUTES) {
         restoreAttribute(element, attribute, original[attribute]);
       }
+      continue;
+    }
+
+    if (tagNameOf(element) === "STYLE" && isEditorUiNode(element, state)) {
+      element.remove?.();
     }
   }
-  editorDocumentState.delete(document);
+
+  if (document === state.sourceDocument) {
+    editorDocumentState.delete(document);
+    editorStatesByToken.delete(state.token);
+  }
 }
 
 export function serializeDocument(document, doctype = document?.doctype) {
