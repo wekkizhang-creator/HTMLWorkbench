@@ -11,6 +11,10 @@ import {
   serializeDocument
 } from "../public/editor-core.mjs";
 
+function escapeAttribute(value) {
+  return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
 function fakeElement(tagName, parentElement = null, attributes = {}) {
   const element = {
     tagName: tagName.toUpperCase(),
@@ -18,7 +22,6 @@ function fakeElement(tagName, parentElement = null, attributes = {}) {
     children: [],
     parentNode: parentElement,
     textContent: "",
-    outerHTML: `<${tagName}></${tagName}>`,
     _attributes: new Map(Object.entries(attributes)),
     appendChild(child) {
       child.parentElement = this;
@@ -45,6 +48,15 @@ function fakeElement(tagName, parentElement = null, attributes = {}) {
       this.removed = true;
     }
   };
+  Object.defineProperty(element, "outerHTML", {
+    get() {
+      const attributes = Array.from(this._attributes, ([name, value]) => ` ${name}="${escapeAttribute(value)}"`).join("");
+      const content = this.children.length
+        ? this.children.map((child) => child.outerHTML).join("")
+        : this.textContent;
+      return `<${tagName}${attributes}>${content}</${tagName}>`;
+    }
+  });
   if (parentElement) parentElement.appendChild(element);
   return element;
 }
@@ -82,6 +94,22 @@ test("selection keeps visible leaves when no semantic block exists", () => {
   assert.equal(chooseEditableElement(fakeElement("div")), null);
 });
 
+test("selection chooses the nearest list item or definition entry", () => {
+  const body = fakeElement("body");
+  const list = fakeElement("ul", body);
+  const item = fakeElement("li", list);
+  const nestedList = fakeElement("ol", item);
+  const nestedItem = fakeElement("li", nestedList);
+  const nestedText = fakeElement("span", nestedItem);
+  const definitions = fakeElement("dl", body);
+  const term = fakeElement("dt", definitions);
+  const description = fakeElement("dd", definitions);
+
+  assert.equal(chooseEditableElement(nestedText), nestedItem);
+  assert.equal(chooseEditableElement(term), term);
+  assert.equal(chooseEditableElement(description), description);
+});
+
 test("labels prefer accessible and element-specific context without long page text", () => {
   const heading = fakeElement("h2", null, { id: "results" });
   heading.textContent = "Quarterly revenue and conversion analysis for the international market";
@@ -96,13 +124,14 @@ test("labels prefer accessible and element-specific context without long page te
 test("transient IDs stay inside body and cleanup restores original edit attributes", () => {
   const body = fakeElement("body");
   const originalEditable = fakeElement("p", body, { contenteditable: "plaintext-only", spellcheck: "false", "data-business": "keep" });
-  const temporaryEditable = fakeElement("span", originalEditable, { "data-hwb-selected": "true" });
-  const editorStyle = fakeElement("style", body, { "data-hwb-editor-ui": "true" });
+  const temporaryEditable = fakeElement("span", originalEditable);
   const document = fakeDocument(body);
 
   assignEditorNodeIds(document);
+  const editorStyle = fakeElement("style", body, { "data-hwb-editor-ui": "true" });
   assert.equal(body.hasAttribute("data-hwb-editor-id"), false);
   assert.match(originalEditable.getAttribute("data-hwb-editor-id"), /^hwb-/);
+  temporaryEditable.setAttribute("data-hwb-selected", "true");
   temporaryEditable.setAttribute("contenteditable", "true");
   temporaryEditable.setAttribute("spellcheck", "true");
   originalEditable.setAttribute("contenteditable", "true");
@@ -120,38 +149,60 @@ test("transient IDs stay inside body and cleanup restores original edit attribut
   assert.equal(editorStyle.removed, true);
 });
 
-test("serialization scrubs editor artifacts and retains the document doctype", () => {
+test("serialization removes editor state while preserving uploaded marker collisions", () => {
   const body = fakeElement("body");
-  const section = fakeElement("section", body);
+  const section = fakeElement("section", body, {
+    contenteditable: "plaintext-only",
+    spellcheck: "false",
+    "data-business": "keep",
+    "data-hwb-editor-id": "uploaded-id",
+    "data-hwb-selected": "uploaded-selection",
+    "data-hwb-editor-ui": "uploaded-marker"
+  });
+  const temporaryEditable = fakeElement("span", section);
   const document = fakeDocument(body);
-  document.documentElement.outerHTML = '<html><head></head><body><section data-business="keep"></section></body></html>';
+  const uploadedStyle = fakeElement("style", document.head, { "data-hwb-editor-ui": "uploaded-style" });
+  uploadedStyle.textContent = ".uploaded { color: teal; }";
+  const uploadedScript = fakeElement("script", document.head);
+  uploadedScript.textContent = "window.keep = true;";
 
   assignEditorNodeIds(document);
   section.setAttribute("data-hwb-selected", "true");
+  section.setAttribute("contenteditable", "true");
+  section.setAttribute("spellcheck", "true");
+  temporaryEditable.setAttribute("data-hwb-selected", "true");
+  temporaryEditable.setAttribute("contenteditable", "true");
+  temporaryEditable.setAttribute("spellcheck", "true");
+  const editorStyle = fakeElement("style", body, { "data-hwb-editor-ui": "true" });
+  editorStyle.textContent = ".editor-outline { outline: 1px solid red; }";
 
   assert.equal(
     serializeDocument(document, "html"),
-    '<!DOCTYPE html>\n<html><head></head><body><section data-business="keep"></section></body></html>'
+    '<!DOCTYPE html>\n<html><head><style data-hwb-editor-ui="uploaded-style">.uploaded { color: teal; }</style><script>window.keep = true;</script></head><body><section contenteditable="plaintext-only" spellcheck="false" data-business="keep" data-hwb-editor-id="uploaded-id" data-hwb-selected="uploaded-selection" data-hwb-editor-ui="uploaded-marker"><span></span></section></body></html>'
   );
+  assert.equal(editorStyle.removed, true);
 });
 
-test("cleanup removes editor style nodes without deleting non-style content", () => {
+test("cleanup removes only style nodes injected after editor setup", () => {
   const body = fakeElement("body");
-  const editorStyle = fakeElement("style", body, { "data-hwb-editor-ui": "true" });
-  const userElement = fakeElement("div", body, { "data-hwb-editor-ui": "true" });
+  const uploadedStyle = fakeElement("style", body, { "data-hwb-editor-ui": "uploaded-style" });
+  const userElement = fakeElement("div", body, { "data-hwb-editor-ui": "uploaded-element" });
   const document = fakeDocument(body);
 
+  assignEditorNodeIds(document);
+  const editorStyle = fakeElement("style", body, { "data-hwb-editor-ui": "true" });
   scrubEditorArtifacts(document);
 
   assert.equal(editorStyle.removed, true);
+  assert.equal(uploadedStyle.removed, undefined);
+  assert.equal(uploadedStyle.getAttribute("data-hwb-editor-ui"), "uploaded-style");
   assert.equal(userElement.removed, undefined);
-  assert.equal(userElement.hasAttribute("data-hwb-editor-ui"), false);
+  assert.equal(userElement.getAttribute("data-hwb-editor-ui"), "uploaded-element");
 });
 
 test("serialization retains public and system doctype identifiers", () => {
   const body = fakeElement("body");
   const document = fakeDocument(body);
-  document.documentElement.outerHTML = "<html><head></head><body></body></html>";
 
   assert.equal(
     serializeDocument(document, {
@@ -186,4 +237,19 @@ test("history bounds undo commands, clears redo, and reports state changes", () 
   assert.equal(history.undoStack.length, 2);
   assert.equal(history.redoStack.length, 0);
   assert.deepEqual(changes.at(-1), { canUndo: true, canRedo: false });
+});
+
+test("history clamps every configured limit to a finite one through one hundred", () => {
+  const history = new EditorHistory({ limit: Infinity });
+  const singleCommandHistory = new EditorHistory({ limit: 0 });
+
+  for (let index = 0; index < 101; index += 1) {
+    history.execute({ redo() {}, undo() {} });
+  }
+
+  assert.equal(history.limit, 100);
+  assert.equal(history.undoStack.length, 100);
+  assert.equal(singleCommandHistory.limit, 1);
+  assert.equal(new EditorHistory({ limit: 101 }).limit, 100);
+  assert.equal(new EditorHistory({ limit: Number.NaN }).limit, 100);
 });

@@ -210,10 +210,34 @@ test("HEAD returns selected static headers without a response body", async () =>
   });
 });
 
-test("ES modules are served as JavaScript", async () => {
+test("ES modules inherit static cache, ETag, and gzip representation handling", async () => {
   await withServer(async (origin) => {
-    const response = await request(origin, "/editor-core.mjs");
-    assert.equal(response.status, 200);
-    assert.equal(response.headers["content-type"], "text/javascript; charset=utf-8");
+    const gzip = await request(origin, "/editor-core.mjs", {
+      headers: { "Accept-Encoding": "gzip" }
+    });
+    assert.equal(gzip.status, 200);
+    assert.equal(gzip.headers["content-type"], "text/javascript; charset=utf-8");
+    assert.equal(gzip.headers["cache-control"], "public, max-age=600, stale-while-revalidate=86400");
+    assert.equal(gzip.headers.vary, "Accept-Encoding");
+    assert.equal(gzip.headers["content-encoding"], "gzip");
+    assert.ok(gzip.headers.etag);
+
+    const notModified = await request(origin, "/editor-core.mjs", {
+      headers: {
+        "Accept-Encoding": "gzip",
+        "If-None-Match": `W/${gzip.headers.etag}`
+      }
+    });
+    assert.equal(notModified.status, 304);
+    assert.equal(notModified.headers.etag, gzip.headers.etag);
+    assert.equal(notModified.headers["content-encoding"], "gzip");
+    assert.equal(notModified.body.length, 0);
+
+    const identity = await request(origin, "/editor-core.mjs", {
+      headers: { "Accept-Encoding": "identity" }
+    });
+    assert.equal(identity.status, 200);
+    assert.equal(identity.headers["content-encoding"], undefined);
+    assert.notEqual(identity.headers.etag, gzip.headers.etag);
   });
 });

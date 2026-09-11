@@ -9,14 +9,17 @@ export const PROTECTED_TAGS = new Set([
 ]);
 
 const SEMANTIC_BLOCK_TAGS = new Set([
-  "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DETAILS", "DIALOG", "DL",
+  "ADDRESS", "ARTICLE", "ASIDE", "BLOCKQUOTE", "DD", "DETAILS", "DIALOG", "DL", "DT",
   "FIELDSET", "FIGCAPTION", "FIGURE", "FOOTER", "FORM", "HEADER", "MAIN",
-  "MENU", "NAV", "OL", "P", "PRE", "SECTION", "SUMMARY", "TABLE", "UL"
+  "LI", "MENU", "NAV", "OL", "P", "PRE", "SECTION", "SUMMARY", "TABLE", "UL"
 ]);
 const HEADING_TAGS = new Set(["H1", "H2", "H3", "H4", "H5", "H6"]);
 const EDITOR_ID_ATTRIBUTE = "data-hwb-editor-id";
+const EDITOR_UI_ATTRIBUTE = "data-hwb-editor-ui";
 const TRANSIENT_ATTRIBUTES = [EDITOR_ID_ATTRIBUTE, "data-hwb-selected"];
-const originalEditAttributes = new WeakMap();
+const RESTORED_ATTRIBUTES = ["contenteditable", "spellcheck", ...TRANSIENT_ATTRIBUTES, EDITOR_UI_ATTRIBUTE];
+const editorDocumentState = new WeakMap();
+const MAX_HISTORY_COMMANDS = 100;
 
 function tagNameOf(element) {
   return typeof element?.tagName === "string" ? element.tagName.toUpperCase() : "";
@@ -53,15 +56,18 @@ function allDocumentElements(document) {
   return elements;
 }
 
-function captureEditAttributes(document, elements) {
-  const saved = new Map();
+function captureDocumentState(document) {
+  if (editorDocumentState.has(document)) return;
+
+  const elements = allDocumentElements(document);
+  const originalAttributes = new Map();
   for (const element of elements) {
-    saved.set(element, {
-      contenteditable: readAttribute(element, "contenteditable"),
-      spellcheck: readAttribute(element, "spellcheck")
-    });
+    originalAttributes.set(
+      element,
+      Object.fromEntries(RESTORED_ATTRIBUTES.map((attribute) => [attribute, readAttribute(element, attribute)]))
+    );
   }
-  originalEditAttributes.set(document, saved);
+  editorDocumentState.set(document, { originalAttributes, originalElements: new Set(elements) });
 }
 
 function readAttribute(element, name) {
@@ -137,8 +143,8 @@ export function labelForElement(element) {
 }
 
 export function assignEditorNodeIds(document) {
+  captureDocumentState(document);
   const elements = bodyDescendants(document);
-  captureEditAttributes(document, elements);
 
   let nextId = 1;
   for (const element of elements) {
@@ -148,24 +154,26 @@ export function assignEditorNodeIds(document) {
 }
 
 export function scrubEditorArtifacts(document) {
-  const originalAttributes = originalEditAttributes.get(document);
+  const state = editorDocumentState.get(document);
   for (const element of allDocumentElements(document)) {
-    if (tagNameOf(element) === "STYLE" && element.hasAttribute?.("data-hwb-editor-ui")) {
+    if (
+      state
+      && tagNameOf(element) === "STYLE"
+      && !state.originalElements.has(element)
+      && element.hasAttribute?.(EDITOR_UI_ATTRIBUTE)
+    ) {
       element.remove?.();
       continue;
     }
-    element.removeAttribute?.("data-hwb-editor-ui");
-    for (const attribute of TRANSIENT_ATTRIBUTES) {
-      element.removeAttribute?.(attribute);
-    }
 
-    const original = originalAttributes?.get(element);
+    const original = state?.originalAttributes.get(element);
     if (original) {
-      restoreAttribute(element, "contenteditable", original.contenteditable);
-      restoreAttribute(element, "spellcheck", original.spellcheck);
+      for (const attribute of RESTORED_ATTRIBUTES) {
+        restoreAttribute(element, attribute, original[attribute]);
+      }
     }
   }
-  originalEditAttributes.delete(document);
+  editorDocumentState.delete(document);
 }
 
 export function serializeDocument(document, doctype = document?.doctype) {
@@ -190,7 +198,7 @@ function doctypeDeclaration(doctype) {
 
 export class EditorHistory {
   constructor({ limit = 100, onChange } = {}) {
-    this.limit = Math.max(1, limit);
+    this.limit = normalizeHistoryLimit(limit);
     this.onChange = onChange;
     this.undoStack = [];
     this.redoStack = [];
@@ -232,4 +240,9 @@ export class EditorHistory {
   #emitChange() {
     this.onChange?.(this.getState());
   }
+}
+
+function normalizeHistoryLimit(limit) {
+  if (!Number.isFinite(limit)) return MAX_HISTORY_COMMANDS;
+  return Math.min(MAX_HISTORY_COMMANDS, Math.max(1, Math.floor(limit)));
 }
