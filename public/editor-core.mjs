@@ -179,6 +179,16 @@ export function chooseEditableElement(element) {
   }
   if (tagNameOf(current) !== "BODY") return null;
 
+  // Inline text belongs to its text block, but an image remains independently selectable.
+  const textBlockOrImage = path.find((candidate) => {
+    const tag = tagNameOf(candidate);
+    return HEADING_TAGS.has(tag) || tag === "P" || tag === "IMG";
+  });
+  if (textBlockOrImage) return textBlockOrImage;
+
+  const textLeaf = path.find((candidate) => isVisibleLeaf(candidate) && candidate.textContent?.trim());
+  if (textLeaf) return textLeaf;
+
   const semanticBlock = path.find((candidate) => SEMANTIC_BLOCK_TAGS.has(tagNameOf(candidate)));
   return semanticBlock || path.find(isVisibleLeaf) || null;
 }
@@ -275,7 +285,7 @@ export class EditorHistory {
     this.undoStack.push(command);
     if (this.undoStack.length > this.limit) this.undoStack.shift();
     this.redoStack = [];
-    this.#emitChange();
+    this.#emitChange(command, "execute");
   }
 
   undo() {
@@ -283,7 +293,7 @@ export class EditorHistory {
     if (!command) return false;
     command.undo();
     this.redoStack.push(command);
-    this.#emitChange();
+    this.#emitChange(command, "undo");
     return true;
   }
 
@@ -292,12 +302,12 @@ export class EditorHistory {
     if (!command) return false;
     command.redo();
     this.undoStack.push(command);
-    this.#emitChange();
+    this.#emitChange(command, "redo");
     return true;
   }
 
-  #emitChange() {
-    this.onChange?.(this.getState());
+  #emitChange(command, action) {
+    this.onChange?.(this.getState(), { command, action });
   }
 }
 

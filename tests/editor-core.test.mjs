@@ -129,6 +129,96 @@ test("selection chooses the nearest list item or definition entry", () => {
   assert.equal(chooseEditableElement(description), description);
 });
 
+test("selection prefers headings nested in headers and sections", () => {
+  for (const containerTag of ["header", "section"]) {
+    for (const headingTag of ["h1", "h2", "h3", "h4", "h5", "h6"]) {
+      const body = fakeElement("body");
+      const container = fakeElement(containerTag, body);
+      const heading = fakeElement(headingTag, container);
+      fakeElement("span", heading).textContent = "Heading";
+
+      assert.equal(chooseEditableElement(heading), heading);
+    }
+  }
+});
+
+test("selection promotes text descendants to their heading or paragraph", () => {
+  for (const blockTag of ["h1", "h2", "h3", "h4", "h5", "h6", "p"]) {
+    const body = fakeElement("body");
+    const section = fakeElement("section", body);
+    const header = fakeElement("header", section);
+    const block = fakeElement(blockTag, header);
+    const span = fakeElement("span", block);
+    const emphasis = fakeElement("em", span);
+    emphasis.textContent = "Nested text";
+
+    assert.equal(chooseEditableElement(span), block);
+    assert.equal(chooseEditableElement(emphasis), block);
+  }
+});
+
+test("selection prefers images inside semantic containers and text blocks", () => {
+  for (const containerTag of ["header", "section", "figure", "li", "p", "h2"]) {
+    const body = fakeElement("body");
+    const container = fakeElement(containerTag, body);
+    const image = fakeElement("img", container);
+
+    assert.equal(chooseEditableElement(image), image);
+  }
+});
+
+test("selection prefers visible text leaves over surrounding semantic containers", () => {
+  for (const leafTag of ["span", "strong", "div"]) {
+    const body = fakeElement("body");
+    const section = fakeElement("section", body);
+    const leaf = fakeElement(leafTag, section);
+    leaf.textContent = "Visible text";
+
+    assert.equal(chooseEditableElement(leaf), leaf);
+  }
+});
+
+test("selection retains semantic containers for direct container clicks", () => {
+  for (const containerTag of ["header", "section", "article", "figure", "li", "dt", "dd"]) {
+    const body = fakeElement("body");
+    const container = fakeElement(containerTag, body);
+    fakeElement("h2", container).textContent = "Heading";
+    fakeElement("p", container).textContent = "Paragraph";
+    fakeElement("img", container);
+
+    assert.equal(chooseEditableElement(container), container);
+  }
+});
+
+test("selection does not prefer hidden or empty text leaves over semantic containers", () => {
+  const body = fakeElement("body");
+  const section = fakeElement("section", body);
+  for (const attributes of [{ hidden: "" }, { "aria-hidden": "true" }]) {
+    const leaf = fakeElement("span", section, attributes);
+    leaf.textContent = "Hidden text";
+    assert.equal(chooseEditableElement(leaf), section);
+  }
+  const empty = fakeElement("span", section);
+  empty.textContent = " \n ";
+  assert.equal(chooseEditableElement(empty), section);
+});
+
+test("selection rejects protected ancestors before choosing headings images or text", () => {
+  for (const protectedTag of ["html", "head", "script", "style", "link", "meta"]) {
+    for (const targetTag of ["h2", "p", "img", "span"]) {
+      const body = fakeElement("body");
+      const protectedParent = fakeElement(protectedTag, body);
+      const section = fakeElement("section", protectedParent);
+      const target = fakeElement(targetTag, section);
+      target.textContent = "Protected content";
+
+      assert.equal(chooseEditableElement(target), null);
+    }
+  }
+  assert.equal(chooseEditableElement(fakeElement("body")), null);
+  assert.equal(chooseEditableElement(null), null);
+});
+
 test("labels prefer accessible and element-specific context without long page text", () => {
   const heading = fakeElement("h2", null, { id: "results" });
   heading.textContent = "Quarterly revenue and conversion analysis for the international market";
@@ -271,6 +361,66 @@ test("history executes, undoes and redoes commands", () => {
   history.undo();
   history.redo();
   assert.deepEqual(values, ["new", "old", "new"]);
+});
+
+test("history preserves state as its first argument and emits command action metadata", () => {
+  const changes = [];
+  let value = "before";
+  const history = new EditorHistory({
+    onChange: (state, event) => changes.push({ state, event, value })
+  });
+  const command = {
+    pageIndex: 2,
+    elementId: "heading",
+    redo() { value = "after"; },
+    undo() { value = "before"; }
+  };
+
+  history.execute(command);
+  assert.equal(history.undo(), true);
+  assert.equal(history.redo(), true);
+
+  assert.deepEqual(changes, [
+    { state: { canUndo: true, canRedo: false }, event: { command, action: "execute" }, value: "after" },
+    { state: { canUndo: false, canRedo: true }, event: { command, action: "undo" }, value: "before" },
+    { state: { canUndo: true, canRedo: false }, event: { command, action: "redo" }, value: "after" }
+  ]);
+  for (const change of changes) assert.equal(change.event.command, command);
+});
+
+test("history emits nothing for empty undo or redo", () => {
+  const changes = [];
+  const history = new EditorHistory({ onChange: (...args) => changes.push(args) });
+  assert.equal(history.undo(), false);
+  assert.equal(history.redo(), false);
+  assert.equal(changes.length, 0);
+
+  history.execute({ redo() {}, undo() {} });
+  assert.equal(history.redo(), false);
+  assert.equal(changes.length, 1);
+  assert.equal(history.undo(), true);
+  assert.equal(history.undo(), false);
+  assert.equal(changes.length, 2);
+});
+
+test("history emits nothing for invalid or throwing commands", () => {
+  const changes = [];
+  const history = new EditorHistory({ onChange: (...args) => changes.push(args) });
+  const failure = new Error("Mutation failed");
+  assert.throws(() => history.execute({}), TypeError);
+  assert.throws(() => history.execute({ redo() { throw failure; }, undo() {} }), failure);
+  assert.equal(changes.length, 0);
+
+  history.execute({ redo() {}, undo() { throw failure; } });
+  assert.throws(() => history.undo(), failure);
+  assert.equal(changes.length, 1);
+
+  let failRedo = false;
+  history.execute({ redo() { if (failRedo) throw failure; }, undo() {} });
+  history.undo();
+  failRedo = true;
+  assert.throws(() => history.redo(), failure);
+  assert.equal(changes.length, 3);
 });
 
 test("history bounds undo commands, clears redo, and reports state changes", () => {
