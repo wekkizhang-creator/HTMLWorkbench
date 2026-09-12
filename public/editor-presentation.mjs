@@ -73,11 +73,12 @@ export function createPresentation(doc) {
   const route = [];
   for (let node = stage; node; node = node.parentElement) route.push(node);
   for (const node of route) mark(node, 'path');
+  // Measure author layout only after snapshotting and clearing hidden state.
+  slides.forEach((slide, i) => mark(slide, `slide-${i}`));
   const displays = slides.map(slide => {
     const display = view.getComputedStyle(slide).display;
     return display === 'none' ? 'block' : display;
   });
-  slides.forEach((slide, i) => mark(slide, `slide-${i}`));
   const style = doc.createElement('style');
   style.setAttribute(marker, 'override');
   doc.head.append(style);

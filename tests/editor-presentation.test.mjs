@@ -71,6 +71,40 @@ test('presentation browser contract', { skip: !process.env.EDITOR_PLAYWRIGHT_MOD
     });
     assert.deepEqual(result, { visible: ['none','none','none','none'], restored: true, stable: true, size: [1200,700,0,0,1200,700], disposed: true });
   });
+  await t.test('hidden page two retains flex/grid layout and footer inside the canvas', async () => {
+    for (const layout of ['flex', 'grid']) {
+      const result = await page.evaluate((layout) => {
+        makeDoc(`<style>
+          .stage { width: 1440px; height: 810px; }
+          .slide { display: ${layout}; flex-direction: column; grid-template-rows: 60px minmax(0,1fr) 40px; padding: 40px; }
+          .slide[hidden], .slide[aria-hidden="true"] { display: none !important; }
+          header { height: 60px; flex: 0 0 60px; }
+          .content { height: 100%; min-height: 0; flex: 1 1 auto; }
+          footer { height: 40px; flex: 0 0 40px; }
+          </style><div class="stage"><section class="slide">One</section>
+          <section class="slide" hidden="until-found" aria-hidden="true"><header>Two</header><div class="content">Body</div><footer>Page 2 footer</footer></section></div>`);
+        const original = document.cloneNode(true);
+        const a = createPresentation(document);
+        try {
+          a.activate(1);
+          const slide = a.slides[1];
+          const footer = slide.querySelector('footer').getBoundingClientRect();
+          const clone = document.cloneNode(true); a.restoreClone(clone);
+          return { display: getComputedStyle(slide).display, inside: footer.top >= 0 && footer.bottom <= a.height,
+            restored: clone.documentElement.isEqualNode(original.documentElement), html: a.thumbnailHtml(1) };
+        } finally { a?.dispose(); }
+      }, layout);
+      assert.equal(result.display, layout);
+      assert.equal(result.inside, true, `${layout} footer must fit the logical canvas`);
+      assert.equal(result.restored, true);
+      const preview = await browser.newPage();
+      try {
+        await preview.setContent(result.html);
+        assert.deepEqual(await preview.evaluate(() => [getComputedStyle(document.querySelector('.slide')).display,
+          document.querySelector('footer').getBoundingClientRect().bottom <= 810]), [layout, true]);
+      } finally { await preview.close(); }
+    }
+  });
   await t.test('notes slot updates are safe, persisted, and invalid data stays untouched', async () => {
     const result = await page.evaluate(() => {
       makeDoc(fixture);
