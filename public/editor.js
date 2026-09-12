@@ -607,7 +607,8 @@ function initializeEditor() {
 
   controls.forEach((control) => control.addEventListener("change", () => applyProperty(control.dataset.style, control.value.trim(), control)));
   function colorValue(control) {
-    const alpha = Number(control.dataset.alpha ?? 1);
+    const currentAlpha = Number(control.dataset.alpha ?? 1);
+    const alpha = control.dataset.color === "background-color" && currentAlpha === 0 ? 1 : currentAlpha;
     return alpha === 1 ? control.value : `rgb(${[1, 3, 5].map((i) => parseInt(control.value.slice(i, i + 2), 16)).join(" ")} / ${alpha})`;
   }
   colors.forEach((control) => control.addEventListener("change", () => applyProperty(control.dataset.color, colorValue(control), control)));

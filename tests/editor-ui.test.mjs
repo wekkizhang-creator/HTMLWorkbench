@@ -269,6 +269,23 @@ if (process.env.EDITOR_PLAYWRIGHT_MODULE) {
         await page.waitForFunction(() => document.getElementById("saveState").dataset.dirty === "false");
         fixture = original;
       });
+      await t.test("background swatch colors transparent elements with undo redo and save", async () => {
+        fixture = '<h1 id="heading">Transparent background</h1>';
+        await ready(); await selectHeading();
+        const background = () => frame().locator("#heading").evaluate((el) => getComputedStyle(el).backgroundColor);
+        assert.equal(await background(), "rgba(0, 0, 0, 0)");
+        await page.locator('[data-color="background-color"]').fill("#00ff00");
+        await page.locator('[data-color="background-color"]').press("Tab");
+        assert.equal(await background(), "rgb(0, 255, 0)");
+        await page.locator("#undoButton").click();
+        assert.equal(await background(), "rgba(0, 0, 0, 0)");
+        await page.locator("#redoButton").click();
+        assert.equal(await background(), "rgb(0, 255, 0)");
+        await page.locator("#saveButton").click();
+        await page.waitForFunction(() => document.getElementById("saveState").dataset.dirty === "false");
+        assert.match(saved, /background-color: rgb\(0, 255, 0\)/);
+        fixture = original;
+      });
       await t.test("safe mount, original scripts paused, navigation blocked, tree and parent/child selection", async () => {
         await ready();
         assert.equal(await page.locator("#editorCanvas").getAttribute("sandbox"), "allow-same-origin");
