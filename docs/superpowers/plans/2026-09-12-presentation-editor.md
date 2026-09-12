@@ -15,18 +15,27 @@
 - Same save API, version conflict checks and 30 MiB bound.
 
 ## Task 1: Presentation Adapter
-- [ ] Add failing tests for detection, active-slide overrides, restoration and notes.
-- [ ] Implement `public/editor-presentation.mjs` with scoped temporary state.
-- [ ] Verify tests and serialization preservation.
+- [x] Add failing tests for detection, active-slide overrides, restoration and notes.
+- [x] Implement `public/editor-presentation.mjs` with scoped temporary state.
+- [x] Verify tests and serialization preservation.
 
 ## Task 2: Workbench Integration
-- [ ] Add page/module tabs, lazy thumbnails and fixed-ratio scaled canvas.
-- [ ] Connect page switching and selection bounds without clearing history.
-- [ ] Add undoable raster replacement and notes editing with validation.
-- [ ] Keep ordinary HTML behavior and save errors unchanged.
+- [x] Add page/module tabs, lazy thumbnails and fixed-ratio scaled canvas.
+- [x] Connect page switching and selection bounds without clearing history.
+- [x] Add undoable raster replacement and notes editing with validation.
+- [x] Keep ordinary HTML behavior and save errors unchanged.
 
 ## Task 3: Acceptance
-- [ ] Add browser tests for page/text/style/image/notes edit, undo/redo and save.
-- [ ] Test original playback after save and no leaked editor state.
-- [ ] Run full checks and desktop/mobile visual QA using real sample copy.
-- [ ] Review, commit and provide local URL; leave production sample unchanged.
+- [x] Add browser tests for page/text/style/image/notes edit, undo/redo and save.
+- [x] Test original playback after save and no leaked editor state.
+- [x] Run full checks and desktop/mobile visual QA using real sample copy.
+- [x] Review, commit and provide local URL; leave production sample unchanged.
+
+## Verification
+
+- `npm.cmd run check`: 199 passed, 3 opt-in browser entries skipped.
+- Ordinary editor Chrome acceptance: 30 passed.
+- Adapter targeted tests including Chrome: 23 passed.
+- Presentation Chrome acceptance: synthetic fixture and real 23-page sample passed, including all page dimensions, footer bounds, notes serialization, original playback, and desktop/mobile selection outlines.
+- Real local API smoke: upload sample copy, save/restore notes, and read public content passed. Production source was not modified; this feature is not deployed.
+- Independent review findings on hidden display and structural thumbnail CSS fixed in `c1b3324` and `d78919d`; follow-up review found no remaining blockers in those fixes.

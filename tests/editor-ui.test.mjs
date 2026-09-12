@@ -8,7 +8,7 @@ const asset = (name) => readFile(new URL(`../public/${name}`, import.meta.url), 
 async function helpers() {
   const source = await asset("editor.js");
   const context = vm.createContext({ TextEncoder, URL, console });
-  vm.runInContext(source.replace(/^import[\s\S]*?from "\.\/editor-core\.mjs";/, "")
+  vm.runInContext(source.replace(/^import[\s\S]*?from "\.\/editor-[\w-]+\.mjs";\s*/gm, "")
     .replace(/initializeEditor\(\);\s*$/, ""), context);
   return context;
 }
@@ -343,7 +343,7 @@ if (process.env.EDITOR_PLAYWRIGHT_MODULE) {
       });
       await t.test("advanced CSS applies and rejects wholly invalid CSS", async () => {
         await selectHeading();
-        await page.locator("summary").click();
+        await page.locator("#styleInspector summary").click();
         await page.locator("#advancedCss").fill("font-size: 35px; color: rgb(20, 90, 70);");
         await page.locator("#applyCssButton").click();
         assert.equal(await frame().locator("#heading").evaluate((el) => el.style.fontSize), "35px");

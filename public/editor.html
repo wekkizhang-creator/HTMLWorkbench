@@ -23,6 +23,8 @@
     <button id="drawerBackdrop" class="drawer-backdrop" aria-label="关闭侧栏" tabindex="-1"></button>
     <aside class="module-panel" id="treePanel" aria-label="模块">
       <div class="panel-heading"><h2>模块</h2><button class="icon-button mobile-only" data-close-drawer title="关闭模块" aria-label="关闭模块">×</button></div>
+      <div id="presentationTabs" class="view-tabs" role="tablist" aria-label="文档视图" hidden><button id="pagesTab" role="tab" aria-selected="true" aria-controls="slideList">页面</button><button id="modulesTab" role="tab" aria-selected="false" aria-controls="moduleTree">模块</button></div>
+      <nav id="slideList" aria-label="演示页面" hidden></nav>
       <nav id="moduleTree" aria-label="文档模块"></nav>
     </aside>
     <section class="canvas-panel" aria-label="编辑画布">
@@ -42,13 +44,15 @@
         <div id="selectionOutline" class="outline selection-outline" hidden></div>
         <div id="loadState" class="load-state" role="status"><span id="loadMessage">正在载入文档…</span><button id="retryButton" hidden>重试</button></div>
       </div>
-      <footer class="canvas-footer"><span id="selectionLabel">未选择元素</span><span id="documentSize">--</span></footer>
+      <footer class="canvas-footer"><span id="selectionLabel">未选择元素</span><span id="pageIndicator" hidden></span><span id="documentSize">--</span></footer>
     </section>
     <aside class="inspector-panel" id="inspectorPanel" aria-label="属性">
       <div class="panel-heading"><h2>属性</h2><button class="icon-button mobile-only" data-close-drawer title="关闭属性" aria-label="关闭属性">×</button></div>
       <p id="inspectorEmpty" class="empty-label">未选择元素</p>
+      <details id="notesPanel" class="control-section notes-panel" hidden><summary>备注与来源</summary><label for="notesEditor">当前页备注 HTML</label><textarea id="notesEditor" rows="6" spellcheck="false" aria-label="当前页备注 HTML"></textarea></details>
       <fieldset id="styleInspector" disabled hidden>
         <legend class="sr-only">元素样式</legend>
+        <section id="imagePanel" class="control-section" hidden><h3>图片</h3><button id="replaceImageButton" type="button">替换图片</button><input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden><p id="imageStatus" role="status"></p></section>
         <section class="control-section"><h3>文字</h3>
           <label class="wide">字体<input data-style="font-family" aria-label="字体" placeholder="继承"></label>
           <div class="control-grid">

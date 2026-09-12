@@ -85,3 +85,19 @@ textarea { margin: 12px 0 8px; font-family: Consolas, monospace; resize: vertica
   .canvas-toolbar { padding-inline: 6px; gap: 4px; }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+.view-tabs { display: flex; padding: 8px; gap: 4px; border-bottom: 1px solid var(--line); }
+.view-tabs button { flex: 1; }
+.view-tabs [aria-selected="true"] { background: #e3eee8; border-color: var(--moss); }
+#slideList { flex: 1; min-height: 0; overflow: auto; padding: 10px; }
+.slide-item { width: 100%; display: flex; flex-direction: column; align-items: stretch; padding: 6px; margin-bottom: 10px; gap: 6px; }
+.slide-item[aria-current="page"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.slide-thumb { position: relative; width: 100%; overflow: hidden; background: white; pointer-events: none; }
+.slide-thumb iframe { position: absolute; left: 0; top: 0; border: 0; transform-origin: top left; pointer-events: none; }
+.slide-caption { display: block; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; text-align: left; }
+.canvas-viewport[data-presentation="true"] { background: #dfe5e3; }
+.canvas-viewport[data-presentation="true"] #editorCanvas { position: absolute; transform-origin: top left; }
+#pageIndicator { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.notes-panel { flex-shrink: 0; max-height: 40%; overflow: auto; }
+.notes-panel label { margin-top: 12px; }
+.notes-panel textarea { font-family: inherit; }
+#imageStatus { font-size: 11px; margin-top: 8px; overflow-wrap: anywhere; }

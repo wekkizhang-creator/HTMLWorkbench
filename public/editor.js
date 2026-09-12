@@ -2,6 +2,8 @@ import {
   assignEditorNodeIds, chooseEditableElement, EditorHistory, isProtectedElement,
   labelForElement, scrubEditorArtifacts, serializeDocument
 } from "./editor-core.mjs";
+import { createPresentation } from "./editor-presentation.mjs";
+import { readRasterImage, imageReplacementCommand } from "./editor-images.mjs";
 
 function createSaveRequest(html, version) {
   if (!version) throw new Error("Missing document version; reload before saving.");
@@ -90,6 +92,12 @@ function initializeEditor() {
   let shadowModes = new Map();
   let rows = new Map();
   let history = newHistory();
+  let presentation = null;
+  let notesDraft = false;
+  let canvasScale = 1;
+  let canvasOffset = { x: 0, y: 0 };
+  let thumbnailObserver = null;
+  let thumbnailTimers = new Map();
 
   function newHistory() {
     return new EditorHistory({ onChange() { dirty = true; refresh(); } });
@@ -100,7 +108,7 @@ function initializeEditor() {
   }
 
   function hasPendingChanges() {
-    return cssDraft || Boolean(propertyDraft) || Boolean(textSession && textSession.element.innerHTML !== textSession.before);
+    return notesDraft || cssDraft || Boolean(propertyDraft) || Boolean(textSession && textSession.element.innerHTML !== textSession.before);
   }
 
   function showMessage(value = "") {
@@ -123,10 +131,13 @@ function initializeEditor() {
     $("parentButton").disabled = busy || !editable(selected?.parentElement);
     $("childButton").disabled = busy || !firstChild(selected);
     $("editTextButton").disabled = busy || !safeTextTarget(selected);
+    $("notesEditor").disabled = busy || !presentation?.notesAvailable;
+    $("deleteButton").disabled = busy || Boolean(presentation?.slides.includes(selected));
+    for (const row of $("slideList").children) row.disabled = busy;
   }
 
   function editable(element) {
-    return Boolean(element && doc?.body?.contains(element) && element.tagName !== "TEMPLATE" && !isProtectedElement(element));
+    return Boolean(element && doc?.body?.contains(element) && (!presentation || presentation.slides[presentation.index].contains(element)) && element.tagName !== "TEMPLATE" && !isProtectedElement(element));
   }
 
   function firstChild(element) {
@@ -137,7 +148,7 @@ function initializeEditor() {
     if (!editable(element) || busy || textSession) { target.hidden = true; return; }
     const rect = element.getBoundingClientRect();
     target.hidden = !rect.width || !rect.height;
-    Object.assign(target.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+    Object.assign(target.style, { left: `${canvasOffset.x + rect.left * canvasScale}px`, top: `${canvasOffset.y + rect.top * canvasScale}px`, width: `${rect.width * canvasScale}px`, height: `${rect.height * canvasScale}px` });
   }
 
   function drawOutlines() {
@@ -168,7 +179,8 @@ function initializeEditor() {
         visit(element, depth + 1);
       }
     }
-    if (doc?.body) visit(doc.body, 0);
+    if (presentation) visit(presentation.slides[presentation.index], 0);
+    else if (doc?.body) visit(doc.body, 0);
     $("moduleTree").replaceChildren(fragment);
   }
 
@@ -188,6 +200,7 @@ function initializeEditor() {
 
   function renderInspector() {
     $("inspectorEmpty").hidden = Boolean(selected);
+    $("imagePanel").hidden = selected?.tagName !== "IMG";
     if (!selected) return;
     const computed = canvas.contentWindow.getComputedStyle(selected);
     for (const control of controls) {
@@ -224,10 +237,17 @@ function initializeEditor() {
     $("selectionLabel").textContent = selected ? labelForElement(selected) : "未选择元素";
     updateToolbar();
     drawOutlines();
+    if (presentation) {
+      $("pageIndicator").textContent = `${presentation.index + 1} / ${presentation.slides.length}`;
+      if (!notesDraft) $("notesEditor").value = presentation.getNotes(presentation.index);
+      for (const [index, row] of [...$("slideList").children].entries()) row.setAttribute("aria-current", index === presentation.index ? "page" : "false");
+      scheduleThumbnail(presentation.index);
+    }
   }
 
   function select(element, scroll = false) {
     if (busy) return false;
+    finishNotes();
     finishText();
     if (!commitPropertyDraft()) return false;
     if (cssDraft && !applyAdvancedCss()) return false;
@@ -327,7 +347,7 @@ function initializeEditor() {
     finishText();
     if (!commitPropertyDraft()) return;
     if (cssDraft && !applyAdvancedCss()) return;
-    if (!editable(selected) || busy) return;
+    if (!editable(selected) || busy || presentation?.slides.includes(selected)) return;
     const element = selected;
     const parent = element.parentNode;
     const next = element.nextSibling;
@@ -339,6 +359,7 @@ function initializeEditor() {
 
   function navigateHistory(direction) {
     if (busy) return;
+    finishNotes();
     finishText();
     if (!commitPropertyDraft()) return;
     if (cssDraft && !applyAdvancedCss()) return;
@@ -389,6 +410,133 @@ function initializeEditor() {
     }
     if (name) $(name === "tree" ? "treePanel" : "inspectorPanel").querySelector("button")?.focus();
     else if (previous) $(previous === "tree" ? "treeToggle" : "inspectorToggle").focus();
+    fitCanvas();
+  }
+
+  function fitCanvas() {
+    const viewport = $("canvasViewport");
+    if (!presentation) {
+      canvasScale = 1;
+      canvasOffset = { x: 0, y: 0 };
+      canvas.removeAttribute("style");
+      return;
+    }
+    canvasScale = Math.max(0.01, Math.min(viewport.clientWidth / presentation.width, viewport.clientHeight / presentation.height));
+    canvasOffset = { x: Math.max(0, (viewport.clientWidth - presentation.width * canvasScale) / 2), y: Math.max(0, (viewport.clientHeight - presentation.height * canvasScale) / 2) };
+    Object.assign(canvas.style, { width: `${presentation.width}px`, height: `${presentation.height}px`, left: `${canvasOffset.x}px`, top: `${canvasOffset.y}px`, transform: `scale(${canvasScale})` });
+    for (const holder of $("slideList").querySelectorAll(".slide-thumb")) {
+      const frame = holder.querySelector("iframe");
+      if (frame) frame.style.transform = `scale(${holder.clientWidth / presentation.width})`;
+    }
+    drawOutlines();
+  }
+
+  function setPanelView(pages) {
+    $("slideList").hidden = !pages || !presentation;
+    $("moduleTree").hidden = Boolean(pages && presentation);
+    $("pagesTab").setAttribute("aria-selected", String(pages));
+    $("modulesTab").setAttribute("aria-selected", String(!pages));
+    fitCanvas();
+  }
+
+  function drawThumbnail(index) {
+    if (!presentation) return;
+    const holder = $("slideList").children[index]?.querySelector(".slide-thumb");
+    if (!holder || !holder.dataset.visible) return;
+    let preview = holder.querySelector("iframe");
+    if (!preview) {
+      preview = document.createElement("iframe");
+      preview.setAttribute("sandbox", "");
+      preview.setAttribute("aria-hidden", "true");
+      preview.tabIndex = -1;
+      preview.referrerPolicy = "no-referrer";
+      holder.append(preview);
+    }
+    Object.assign(preview.style, { width: `${presentation.width}px`, height: `${presentation.height}px`, transform: `scale(${holder.clientWidth / presentation.width})` });
+    preview.srcdoc = presentation.thumbnailHtml(index);
+  }
+
+  function scheduleThumbnail(index) {
+    clearTimeout(thumbnailTimers.get(index));
+    thumbnailTimers.set(index, setTimeout(() => { thumbnailTimers.delete(index); drawThumbnail(index); }, 250));
+  }
+
+  function renderPages() {
+    thumbnailObserver?.disconnect();
+    $("slideList").replaceChildren();
+    $("presentationTabs").hidden = !presentation;
+    $("pageIndicator").hidden = !presentation;
+    $("notesPanel").hidden = !presentation?.notesAvailable;
+    $("canvasViewport").dataset.presentation = String(Boolean(presentation));
+    setPanelView(Boolean(presentation));
+    if (!presentation) return;
+    thumbnailObserver = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        const holder = entry.target;
+        if (entry.isIntersecting) { holder.dataset.visible = "true"; drawThumbnail(Number(holder.dataset.index)); }
+        else { delete holder.dataset.visible; holder.replaceChildren(); }
+      }
+    }, { root: $("slideList"), rootMargin: "150px" });
+    presentation.slides.forEach((slide, index) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "slide-item";
+      row.setAttribute("aria-label", `第 ${index + 1} 页 ${slide.dataset.title || slide.getAttribute("aria-label") || ""}`);
+      const holder = document.createElement("span");
+      holder.className = "slide-thumb";
+      holder.style.aspectRatio = `${presentation.width} / ${presentation.height}`;
+      holder.dataset.index = index;
+      const caption = document.createElement("span");
+      caption.className = "slide-caption";
+      caption.textContent = `${index + 1}. ${slide.dataset.title || slide.querySelector("h1,h2")?.textContent || "页面"}`;
+      row.append(holder, caption);
+      row.addEventListener("click", () => switchPage(index));
+      $("slideList").append(row);
+      thumbnailObserver.observe(holder);
+    });
+  }
+
+  function finishNotes() {
+    if (!notesDraft || !presentation?.notesAvailable || busy) return;
+    const deck = presentation, index = deck.index;
+    const before = deck.getNotes(index), after = $("notesEditor").value;
+    notesDraft = false;
+    if (before !== after) history.execute({ undo() { deck.setNotes(index, before); }, redo() { deck.setNotes(index, after); } });
+  }
+
+  function switchPage(index) {
+    if (busy || !presentation) return;
+    finishText();
+    finishNotes();
+    if (!commitPropertyDraft() || cssDraft && !applyAdvancedCss()) return;
+    presentation.activate(index);
+    selected = null;
+    hovered = null;
+    refresh();
+    fitCanvas();
+    setDrawer("");
+    $("slideList").children[index]?.focus({ preventScroll: true });
+  }
+
+  async function replaceImage() {
+    const file = $("imageFile").files[0];
+    $("imageFile").value = "";
+    if (!file || selected?.tagName !== "IMG" || busy) return;
+    finishText(); finishNotes();
+    if (!commitPropertyDraft() || cssDraft && !applyAdvancedCss()) return;
+    const image = selected;
+    busy = true;
+    updateToolbar();
+    $("imageStatus").textContent = "正在读取图片…";
+    try {
+      const data = await readRasterImage(file);
+      const command = imageReplacementCommand(image, data);
+      try { command.redo(); createSaveRequest(serializedHtml(), version); }
+      finally { command.undo(); }
+      history.execute(command);
+      $("imageStatus").textContent = "图片已替换";
+    } catch (error) { $("imageStatus").textContent = error.message; }
+    finally { busy = false; refresh(); }
   }
 
   function attachDocument() {
@@ -398,7 +546,8 @@ function initializeEditor() {
       target.addEventListener(type, listener, options);
       removers.push(() => target.removeEventListener(type, listener, options));
     };
-    on(doc, "pointermove", (event) => { hovered = chooseEditableElement(event.target); drawOutlines(); });
+    const hitTarget = target => target?.tagName === "IMG" ? target : chooseEditableElement(target);
+    on(doc, "pointermove", (event) => { hovered = hitTarget(event.target); drawOutlines(); });
     on(doc, "pointerleave", () => { hovered = null; drawOutlines(); });
     on(doc, "pointerdown", (event) => {
       if (!textSession && event.target.closest?.("input,textarea,select,button")) event.preventDefault();
@@ -406,7 +555,7 @@ function initializeEditor() {
     on(doc, "click", (event) => {
       if (textSession?.element.contains(event.target)) return;
       event.preventDefault();
-      select(chooseEditableElement(event.target));
+      select(hitTarget(event.target));
     }, true);
     on(doc, "auxclick", (event) => event.preventDefault(), true);
     on(doc, "dblclick", (event) => { event.preventDefault(); if (!busy) beginText(event.target); }, true);
@@ -433,6 +582,13 @@ function initializeEditor() {
   }
 
   function releaseDocument() {
+    presentation?.dispose();
+    presentation = null;
+    notesDraft = false;
+    thumbnailObserver?.disconnect();
+    for (const timer of thumbnailTimers.values()) clearTimeout(timer);
+    thumbnailTimers.clear();
+    $("slideList").replaceChildren();
     frameCleanup();
     frameCleanup = () => {};
     if (doc) scrubEditorArtifacts(doc);
@@ -444,6 +600,9 @@ function initializeEditor() {
   function mount(html) {
     releaseDocument();
     sourceDoc = new DOMParser().parseFromString(html, "text/html");
+    if (sourceDoc.querySelectorAll(".stage > .slide").length >= 2) {
+      Object.assign(canvas.style, { width: "1440px", height: "810px" });
+    } else canvas.removeAttribute("style");
     doctype = sourceDoc.doctype?.cloneNode() || null;
     assignEditorNodeIds(sourceDoc);
     // Keep declarative shadow content opaque instead of letting srcdoc consume its templates.
@@ -481,6 +640,9 @@ function initializeEditor() {
         const mounted = canvas.contentDocument;
         if (!mounted?.body || !mounted.documentElement.hasAttribute("data-hwb-editor-state")) throw new Error("画布导航已停止，请重新载入。");
         doc = mounted;
+        presentation = createPresentation(doc);
+        renderPages();
+        fitCanvas();
         helperNodes = new Set(doc.querySelectorAll(`[data-editor-helper="${helperToken}"]`));
         // Keep the source state alive: its keys also identify nodes in srcdoc and history snapshots.
         attachDocument();
@@ -504,6 +666,7 @@ function initializeEditor() {
       const mode = shadowModes.get(element.getAttribute("data-hwb-editor-node-key"));
       if (mode !== undefined) copies[index].setAttribute("shadowrootmode", mode);
     });
+    presentation?.restoreClone(clone);
     return serializeDocument(clone, doctype);
   }
 
@@ -582,6 +745,7 @@ function initializeEditor() {
   async function save() {
     if (busy || !doc) return;
     finishText();
+    finishNotes();
     if (!commitPropertyDraft()) return;
     if (cssDraft && !applyAdvancedCss()) return;
     if (!hasChanges()) return;
@@ -620,6 +784,12 @@ function initializeEditor() {
   $("applyCssButton").addEventListener("click", applyAdvancedCss);
   $("deleteButton").addEventListener("click", removeSelected);
   $("editTextButton").addEventListener("click", () => beginText(selected));
+  $("replaceImageButton").addEventListener("click", () => $("imageFile").click());
+  $("imageFile").addEventListener("change", replaceImage);
+  $("notesEditor").addEventListener("input", () => { notesDraft = true; updateToolbar(); });
+  $("notesEditor").addEventListener("change", finishNotes);
+  $("pagesTab").addEventListener("click", () => setPanelView(true));
+  $("modulesTab").addEventListener("click", () => setPanelView(false));
   $("undoButton").addEventListener("click", () => navigateHistory("undo"));
   $("redoButton").addEventListener("click", () => navigateHistory("redo"));
   $("saveButton").addEventListener("click", save);
@@ -628,7 +798,7 @@ function initializeEditor() {
   $("childButton").addEventListener("click", () => select(firstChild(selected), true));
   $("previewButton").addEventListener("click", () => {
     finishText();
-    try { window.open(previewUrl(record.url, location.href), "_blank", "noopener,noreferrer"); }
+    try { const url = new URL(previewUrl(record.url, location.href)); if (presentation) url.hash = `p=${presentation.index + 1}`; window.open(url.href, "_blank", "noopener,noreferrer"); }
     catch (error) { showMessage(error.message); }
   });
   $("treeToggle").addEventListener("click", () => setDrawer($("workbench").dataset.drawer === "tree" ? "" : "tree"));
@@ -639,7 +809,8 @@ function initializeEditor() {
   window.addEventListener("beforeunload", (event) => {
     if (hasChanges() || busy && doc) { event.preventDefault(); event.returnValue = ""; }
   });
-  window.addEventListener("resize", () => { if (innerWidth >= 900) setDrawer(""); drawOutlines(); });
+  new ResizeObserver(fitCanvas).observe($("canvasViewport"));
+  window.addEventListener("resize", () => { if (innerWidth >= 900) setDrawer(""); fitCanvas(); });
   load();
 }
 
