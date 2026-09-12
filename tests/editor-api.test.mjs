@@ -358,6 +358,35 @@ test("admin editor API reads, saves and detects stale versions", async () => {
   }
 });
 
+test("failed editor index write preserves source, metadata and the existing rollback slot", async () => {
+  const server = await startServer({
+    HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",
+    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun"
+  });
+  try {
+    const recordPath = path.join(server.dataDir, "records", `${TEST_ID}.json`);
+    const record = JSON.parse(await fs.readFile(recordPath, "utf8"));
+    record.previousVersion = { ...record, blobPath: `uploads/${TEST_ID}/previous/upload.html` };
+    await fs.mkdir(path.join(server.dataDir, "uploads", TEST_ID, "previous"), { recursive: true });
+    await fs.writeFile(path.join(server.dataDir, record.previousVersion.blobPath), "<h1>Prior rollback</h1>");
+    await fs.writeFile(recordPath, JSON.stringify(record));
+    const before = await authorizedRequest(server, "GET", `/api/uploads/${TEST_ID}/content`);
+    // A file where the index directory belongs injects a real storage failure.
+    await fs.writeFile(path.join(server.dataDir, "record-index"), "blocked");
+    const failed = await authorizedRequest(server, "PUT", `/api/uploads/${TEST_ID}/content`, {
+      body: "<h1>Must not publish</h1>",
+      headers: { "Content-Type": "text/html", "If-Match": before.json.version }
+    });
+    assert.equal(failed.status, 500);
+    const after = await authorizedRequest(server, "GET", `/api/uploads/${TEST_ID}/content`);
+    assert.equal(after.status, 200);
+    assert.equal(after.json.html, before.json.html);
+    assert.equal(after.json.version, before.json.version);
+    assert.deepEqual(JSON.parse(await fs.readFile(recordPath, "utf8")), record);
+    assert.equal(await fs.readFile(path.join(server.dataDir, record.previousVersion.blobPath), "utf8"), "<h1>Prior rollback</h1>");
+  } finally { await server.close(); }
+});
+
 test("editor save updates the public URL and rollback restores original source", async () => {
   const server = await startServer({
     HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",

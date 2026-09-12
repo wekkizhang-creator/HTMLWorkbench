@@ -2,13 +2,11 @@ import { error, json, methodNotAllowed } from "../lib/http.mjs";
 import { managementRequestFailure } from "../lib/auth.mjs";
 import { MAX_UPLOAD_BYTES } from "../lib/constants.mjs";
 import { assertEditableRecord, createEditorVersion } from "../lib/editor-content.mjs";
-import { assertRecordId, buildReplacementRecord, publicRecord } from "../lib/records.mjs";
+import { assertRecordId, publicRecord } from "../lib/records.mjs";
 import {
   getRecord,
   getUploadContent,
-  saveIndexedRecord,
-  savePreviousVersion,
-  saveUpload,
+  saveEditorReplacement,
   withRecordMutation
 } from "../lib/storage.mjs";
 
@@ -47,16 +45,7 @@ export async function PUT(request) {
         return error("The HTML source changed before it could be saved", 409);
       }
 
-      const previousVersion = await savePreviousVersion(record);
-      const uploadBlob = await saveUpload(record.id, htmlBuffer, { allowOverwrite: true });
-      const updatedRecord = buildReplacementRecord({
-        record: { ...record, previousVersion },
-        fileBuffer: htmlBuffer,
-        originalName: record.originalName,
-        title: record.title,
-        uploadBlob
-      });
-      const savedRecord = await saveIndexedRecord(updatedRecord, record);
+      const savedRecord = await saveEditorReplacement(record, currentBuffer, htmlBuffer);
       return json({
         record: publicRecord(savedRecord),
         version: createEditorVersion(savedRecord, htmlBuffer)
