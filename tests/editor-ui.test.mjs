@@ -45,6 +45,26 @@ test("save request is UTF-8 byte guarded and uses optimistic concurrency", async
   assert.throws(() => h.createSaveRequest("\u4e2d".repeat(10 * 1024 * 1024 + 1), "v1"), /30 MB/);
 });
 
+test("thumbnail cache is revision aware and bounded by LRU entries and UTF-8 bytes", async () => {
+  const h = await helpers();
+  assert.equal(typeof h.createThumbnailCache, "function");
+  const cache = h.createThumbnailCache({ maxEntries: 2, maxBytes: 10 });
+  cache.set(0, 1, "aaaa");
+  cache.set(1, 1, "bbbb");
+  assert.equal(cache.get(0, 0), undefined);
+  assert.equal(cache.get(0, 1), "aaaa");
+  cache.set(2, 1, "cccc");
+  assert.equal(cache.get(1, 1), undefined);
+  cache.set(0, 2, "\u4e2d\u4e2d\u4e2d");
+  assert.equal(cache.get(2, 1), undefined);
+  assert.equal(cache.get(0, 2), "\u4e2d\u4e2d\u4e2d");
+  cache.set(0, 3, "x".repeat(11));
+  assert.equal(cache.get(0, 2), undefined);
+  assert.equal(cache.get(0, 3), undefined);
+  cache.set(1, 2, "ok"); cache.clear();
+  assert.equal(cache.get(1, 2), undefined);
+});
+
 test("preview rejects non-HTTP protocols and supports relative public URLs", async () => {
   const h = await helpers();
   assert.equal(h.previewUrl("/view/a", "https://admin.example/editor.html"), "https://admin.example/view/a");

@@ -4,6 +4,7 @@ import {
 } from "./editor-core.mjs";
 import { createPresentation } from "./editor-presentation.mjs";
 import { readRasterImage, imageReplacementCommand } from "./editor-images.mjs";
+import { createDraftStore } from "./editor-drafts.mjs";
 
 function createSaveRequest(html, version) {
   if (!version) throw new Error("Missing document version; reload before saving.");
@@ -17,6 +18,35 @@ function previewUrl(value, base) {
   const url = new URL(value, base);
   if (!/^https?:$/.test(url.protocol)) throw new Error("Invalid preview URL");
   return url.href;
+}
+
+function createThumbnailCache({ maxEntries = 8, maxBytes = 8 * 1024 * 1024 } = {}) {
+  const entries = new Map();
+  let bytes = 0;
+  const remove = key => {
+    const previous = entries.get(key);
+    if (previous) bytes -= previous.bytes;
+    entries.delete(key);
+  };
+  return {
+    get(key, revision) {
+      const entry = entries.get(key);
+      if (!entry || entry.revision !== revision) return undefined;
+      entries.delete(key);
+      entries.set(key, entry);
+      return entry.html;
+    },
+    set(key, revision, html) {
+      remove(key);
+      const size = new TextEncoder().encode(html).byteLength;
+      if (size > maxBytes) return;
+      entries.set(key, { revision, html, bytes: size });
+      bytes += size;
+      while (entries.size > maxEntries || bytes > maxBytes) remove(entries.keys().next().value);
+    },
+    delete: remove,
+    clear() { entries.clear(); bytes = 0; }
+  };
 }
 
 function snapshotChildren(element) {
@@ -98,9 +128,45 @@ function initializeEditor() {
   let canvasOffset = { x: 0, y: 0 };
   let thumbnailObserver = null;
   let thumbnailTimers = new Map();
+  const thumbnailCache = createThumbnailCache();
+  let thumbnailRevisions = [];
+  let zoom = "fit";
+  let panMode = false;
+  let panStart = null;
+  let draftStore;
+  try { draftStore = createDraftStore(); } catch { draftStore = null; }
+  let draftOwner = crypto.randomUUID();
+  let draftTimer;
+  let draftRevision = 0;
+  let draftTimestamp = 0;
+  let draftQueue = Promise.resolve();
+  let recovery = null;
+  let restoredDraft = null;
+  let draftActionBusy = false;
+  let serverHtml = "";
 
   function newHistory() {
-    return new EditorHistory({ onChange() { dirty = true; refresh(); } });
+    return new EditorHistory({ onChange(_state, change) {
+      dirty = true;
+      const command = change?.command;
+      if (presentation && Number.isInteger(command?.pageIndex)) {
+        if (command.visual !== false) {
+          thumbnailRevisions[command.pageIndex]++;
+          thumbnailCache.delete(command.pageIndex);
+          scheduleThumbnail(command.pageIndex);
+        }
+        if (change.action !== "execute") {
+          presentation.activate(command.pageIndex);
+          selected = editable(command.element) ? command.element : null;
+        }
+      }
+      refresh();
+      scheduleDraft();
+    } });
+  }
+
+  function executeCommand(command, { element = selected, pageIndex = presentation?.index, visual = true } = {}) {
+    history.execute({ ...command, element, pageIndex, visual });
   }
 
   function hasChanges() {
@@ -122,6 +188,7 @@ function initializeEditor() {
     $("redoButton").disabled = busy || !state.canRedo || hasPendingChanges();
     $("saveButton").disabled = busy || !doc || !hasChanges();
     $("previewButton").disabled = busy || !record;
+    $("exportButton").disabled = busy || !doc;
     $("saveState").dataset.dirty = String(hasChanges());
     $("saveState").textContent = busy ? "正在处理…" : !doc ? "尚未载入" : hasChanges() ? "有未保存更改" : "已同步";
     $("workbench").dataset.busy = String(busy);
@@ -134,6 +201,11 @@ function initializeEditor() {
     $("notesEditor").disabled = busy || !presentation?.notesAvailable;
     $("deleteButton").disabled = busy || Boolean(presentation?.slides.includes(selected));
     for (const row of $("slideList").children) row.disabled = busy;
+    $("restoreDraftButton").disabled = busy || draftActionBusy || hasChanges() || !recovery || recovery.baseVersion !== version;
+    $("exportDraftButton").disabled = busy || draftActionBusy || !recovery;
+    $("discardDraftButton").disabled = busy || draftActionBusy || !recovery;
+    for (const control of $("viewControls").querySelectorAll("button,input")) control.disabled = busy || !presentation;
+    updateZoomButtons();
   }
 
   function editable(element) {
@@ -241,7 +313,6 @@ function initializeEditor() {
       $("pageIndicator").textContent = `${presentation.index + 1} / ${presentation.slides.length}`;
       if (!notesDraft) $("notesEditor").value = presentation.getNotes(presentation.index);
       for (const [index, row] of [...$("slideList").children].entries()) row.setAttribute("aria-current", index === presentation.index ? "page" : "false");
-      scheduleThumbnail(presentation.index);
     }
   }
 
@@ -287,7 +358,7 @@ function initializeEditor() {
     if (before !== after) {
       const afterNodes = snapshotChildren(element);
       // Reuse actual nodes so earlier style/delete commands still target the restored descendants.
-      history.execute({ undo() { restoreChildren(element, nodes); }, redo() { restoreChildren(element, afterNodes); } });
+      executeCommand({ undo() { restoreChildren(element, nodes); }, redo() { restoreChildren(element, afterNodes); } }, { element });
     } else updateToolbar();
   }
 
@@ -297,7 +368,7 @@ function initializeEditor() {
     const element = selected;
     const before = element.getAttribute("style");
     if ((before || "") === cssText) { cssDraft = false; updateToolbar(); return; }
-    history.execute({
+    executeCommand({
       undo() { if (before === null) element.removeAttribute("style"); else element.setAttribute("style", before); },
       redo() { element.setAttribute("style", cssText); }
     });
@@ -351,7 +422,7 @@ function initializeEditor() {
     const element = selected;
     const parent = element.parentNode;
     const next = element.nextSibling;
-    history.execute({
+    executeCommand({
       undo() { parent.insertBefore(element, next?.parentNode === parent ? next : null); selected = element; },
       redo() { element.remove(); selected = editable(parent) ? parent : null; }
     });
@@ -415,20 +486,160 @@ function initializeEditor() {
 
   function fitCanvas() {
     const viewport = $("canvasViewport");
+    const surface = $("canvasSurface");
+    $("viewControls").hidden = !presentation;
     if (!presentation) {
       canvasScale = 1;
       canvasOffset = { x: 0, y: 0 };
       canvas.removeAttribute("style");
+      surface.removeAttribute("style");
+      delete viewport.dataset.zoom;
+      delete viewport.dataset.pan;
       return;
     }
-    canvasScale = Math.max(0.01, Math.min(viewport.clientWidth / presentation.width, viewport.clientHeight / presentation.height));
+    const center = { x: (viewport.scrollLeft + viewport.clientWidth / 2 - canvasOffset.x) / canvasScale, y: (viewport.scrollTop + viewport.clientHeight / 2 - canvasOffset.y) / canvasScale };
+    viewport.dataset.zoom = zoom === "fit" ? "fit" : "manual";
+    canvasScale = zoom === "fit" ? Math.max(0.01, Math.min(viewport.clientWidth / presentation.width, viewport.clientHeight / presentation.height)) : zoom / 100;
     canvasOffset = { x: Math.max(0, (viewport.clientWidth - presentation.width * canvasScale) / 2), y: Math.max(0, (viewport.clientHeight - presentation.height * canvasScale) / 2) };
+    Object.assign(surface.style, { width: `${Math.max(viewport.clientWidth, presentation.width * canvasScale)}px`, height: `${Math.max(viewport.clientHeight, presentation.height * canvasScale)}px` });
     Object.assign(canvas.style, { width: `${presentation.width}px`, height: `${presentation.height}px`, left: `${canvasOffset.x}px`, top: `${canvasOffset.y}px`, transform: `scale(${canvasScale})` });
+    viewport.scrollLeft = zoom === "fit" ? 0 : center.x * canvasScale + canvasOffset.x - viewport.clientWidth / 2;
+    viewport.scrollTop = zoom === "fit" ? 0 : center.y * canvasScale + canvasOffset.y - viewport.clientHeight / 2;
+    $("zoomLevel").value = String(Math.round(canvasScale * 100));
+    $("fitCanvasButton").setAttribute("aria-pressed", String(zoom === "fit"));
     for (const holder of $("slideList").querySelectorAll(".slide-thumb")) {
       const frame = holder.querySelector("iframe");
       if (frame) frame.style.transform = `scale(${holder.clientWidth / presentation.width})`;
     }
     drawOutlines();
+    updateZoomButtons();
+  }
+
+  function updateZoomButtons() {
+    $("zoomOutButton").disabled = busy || !presentation || canvasScale <= 0.1;
+    $("zoomInButton").disabled = busy || !presentation || canvasScale >= 2;
+  }
+
+  function setZoom(value) {
+    if (!presentation || busy) return;
+    if (value !== "fit" && (!Number.isFinite(Number(value)) || Number(value) < 10 || Number(value) > 200)) {
+      $("zoomLevel").value = String(Math.round(canvasScale * 100));
+      return;
+    }
+    zoom = value === "fit" ? value : Number(value);
+    if (zoom === "fit") setPan(false);
+    fitCanvas();
+    updateToolbar();
+  }
+
+  function setPan(enabled) {
+    if (enabled && (!presentation || busy)) return;
+    finishText(); finishNotes();
+    panMode = enabled;
+    panStart = null;
+    $("canvasViewport").dataset.pan = String(enabled);
+    delete $("canvasViewport").dataset.dragging;
+    $("panButton").setAttribute("aria-pressed", String(enabled));
+  }
+
+  function draftUnavailable() {
+    $("draftState").textContent = "本地草稿不可用，可导出备份";
+  }
+
+  function scheduleDraft() {
+    clearTimeout(draftTimer);
+    draftRevision++;
+    if (!doc || !record || !hasChanges()) return;
+    $("draftState").textContent = "草稿待保存";
+    draftTimer = setTimeout(persistDraft, 750);
+  }
+
+  function persistDraft(preparedHtml) {
+    clearTimeout(draftTimer);
+    if (!doc || !record || !hasChanges()) return draftQueue;
+    const current = generation, revision = draftRevision;
+    let entry;
+    try {
+      if (!draftStore) throw new Error("Draft storage unavailable");
+      entry = { documentId: id, ownerId: draftOwner, baseVersion: version, html: typeof preparedHtml === "string" ? preparedHtml : serializedHtml(true), title: record.title || "HTML", pageIndex: presentation?.index || 0, updatedAt: Math.max(Date.now(), draftTimestamp + 1) };
+      draftTimestamp = entry.updatedAt;
+    } catch { draftUnavailable(); return draftQueue; }
+    draftQueue = draftQueue.then(() => draftStore.write(entry)).then(() => {
+      if (current === generation && revision === draftRevision) $("draftState").textContent = "本地草稿已保存";
+    }).catch(() => { if (current === generation) draftUnavailable(); });
+    return draftQueue;
+  }
+
+  async function checkDrafts(current = generation) {
+    try {
+      if (!draftStore) throw new Error("Draft storage unavailable");
+      const entries = await draftStore.list(id);
+      if (current !== generation) return;
+      recovery = entries.find(entry => entry.ownerId !== draftOwner && entry.html !== serverHtml) || null;
+      $("draftRecovery").hidden = !recovery;
+      if (recovery) {
+        const time = new Date(recovery.updatedAt).toLocaleString();
+        $("draftRecoveryMessage").textContent = recovery.baseVersion === version ? `发现本地草稿 · ${time}` : `本地草稿基于旧版本，仅可导出 · ${time}`;
+      }
+      updateToolbar();
+    } catch { if (current === generation) draftUnavailable(); }
+  }
+
+  function exportHtml(html, title) {
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+    link.href = url;
+    link.download = `${String(title || "HTML").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").slice(0, 100)}.html`;
+    document.body.append(link);
+    link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function exportCurrent() {
+    if (!doc || busy) return;
+    try { exportHtml(serializedHtml(true), record?.title); }
+    catch (error) { showMessage(error.message || "导出失败，请重试。"); }
+  }
+
+  function restoreLocalDraft() {
+    if (busy || draftActionBusy || hasChanges() || !recovery || recovery.baseVersion !== version) return;
+    restoredDraft = recovery;
+    recovery = null;
+    $("draftRecovery").hidden = true;
+    busy = true;
+    dirty = true;
+    selected = null;
+    history = newHistory();
+    $("loadState").hidden = false;
+    $("loadMessage").textContent = "正在恢复草稿…";
+    updateToolbar();
+    mount(restoredDraft.html, { restored: true, pageIndex: restoredDraft.pageIndex });
+  }
+
+  async function discardLocalDraft() {
+    if (!recovery || busy || draftActionBusy) return;
+    const entry = recovery;
+    draftActionBusy = true;
+    updateToolbar();
+    try {
+      await draftStore.remove(id, entry.ownerId, entry.updatedAt);
+      await checkDrafts();
+    } catch { draftUnavailable(); }
+    finally { draftActionBusy = false; updateToolbar(); }
+  }
+
+  async function clearPublishedDrafts() {
+    clearTimeout(draftTimer);
+    await draftQueue;
+    try {
+      if (!draftStore) return;
+      await draftStore.remove(id, draftOwner);
+      if (restoredDraft) await draftStore.remove(id, restoredDraft.ownerId, restoredDraft.updatedAt);
+      restoredDraft = null;
+      $("draftState").textContent = "";
+      recovery = null;
+      $("draftRecovery").hidden = true;
+    } catch { $("draftState").textContent = "已发布，本地草稿清理失败"; }
   }
 
   function setPanelView(pages) {
@@ -444,6 +655,8 @@ function initializeEditor() {
     const holder = $("slideList").children[index]?.querySelector(".slide-thumb");
     if (!holder || !holder.dataset.visible) return;
     let preview = holder.querySelector("iframe");
+    const revision = thumbnailRevisions[index];
+    if (preview?.dataset.revision === String(revision)) return;
     if (!preview) {
       preview = document.createElement("iframe");
       preview.setAttribute("sandbox", "");
@@ -453,7 +666,13 @@ function initializeEditor() {
       holder.append(preview);
     }
     Object.assign(preview.style, { width: `${presentation.width}px`, height: `${presentation.height}px`, transform: `scale(${holder.clientWidth / presentation.width})` });
-    preview.srcdoc = presentation.thumbnailHtml(index);
+    let html = thumbnailCache.get(index, revision);
+    if (html === undefined) {
+      html = presentation.thumbnailHtml(index);
+      thumbnailCache.set(index, revision, html);
+    }
+    preview.srcdoc = html;
+    preview.dataset.revision = String(revision);
   }
 
   function scheduleThumbnail(index) {
@@ -463,6 +682,8 @@ function initializeEditor() {
 
   function renderPages() {
     thumbnailObserver?.disconnect();
+    thumbnailCache.clear();
+    thumbnailRevisions = presentation?.slides.map(() => 0) || [];
     $("slideList").replaceChildren();
     $("presentationTabs").hidden = !presentation;
     $("pageIndicator").hidden = !presentation;
@@ -501,7 +722,7 @@ function initializeEditor() {
     const deck = presentation, index = deck.index;
     const before = deck.getNotes(index), after = $("notesEditor").value;
     notesDraft = false;
-    if (before !== after) history.execute({ undo() { deck.setNotes(index, before); }, redo() { deck.setNotes(index, after); } });
+    if (before !== after) executeCommand({ undo() { deck.setNotes(index, before); }, redo() { deck.setNotes(index, after); } }, { element: null, pageIndex: index, visual: false });
   }
 
   function switchPage(index) {
@@ -533,7 +754,7 @@ function initializeEditor() {
       const command = imageReplacementCommand(image, data);
       try { command.redo(); createSaveRequest(serializedHtml(), version); }
       finally { command.undo(); }
-      history.execute(command);
+      executeCommand(command, { element: image });
       $("imageStatus").textContent = "图片已替换";
     } catch (error) { $("imageStatus").textContent = error.message; }
     finally { busy = false; refresh(); }
@@ -570,7 +791,7 @@ function initializeEditor() {
       // Plain-text insertion keeps clipboard markup and scripts outside the document.
       doc.execCommand("insertText", false, text);
     }, true);
-    on(doc, "input", updateToolbar, true);
+    on(doc, "input", () => { updateToolbar(); scheduleDraft(); }, true);
     on(doc, "focusout", (event) => { if (textSession && !textSession.element.contains(event.relatedTarget)) finishText(); }, true);
     on(doc, "keydown", keyboard, true);
     on(doc, "scroll", drawOutlines, true);
@@ -582,12 +803,21 @@ function initializeEditor() {
   }
 
   function releaseDocument() {
+    clearTimeout(draftTimer);
+    draftRevision++;
     presentation?.dispose();
     presentation = null;
+    zoom = "fit";
+    panMode = false;
+    panStart = null;
+    $("panButton").setAttribute("aria-pressed", "false");
+    delete $("canvasViewport").dataset.pan;
+    delete $("canvasViewport").dataset.dragging;
     notesDraft = false;
     thumbnailObserver?.disconnect();
     for (const timer of thumbnailTimers.values()) clearTimeout(timer);
     thumbnailTimers.clear();
+    thumbnailCache.clear();
     $("slideList").replaceChildren();
     frameCleanup();
     frameCleanup = () => {};
@@ -597,7 +827,7 @@ function initializeEditor() {
     sourceDoc = null;
   }
 
-  function mount(html) {
+  function mount(html, { restored = false, pageIndex = 0 } = {}) {
     releaseDocument();
     sourceDoc = new DOMParser().parseFromString(html, "text/html");
     if (sourceDoc.querySelectorAll(".stage > .slide").length >= 2) {
@@ -641,6 +871,7 @@ function initializeEditor() {
         if (!mounted?.body || !mounted.documentElement.hasAttribute("data-hwb-editor-state")) throw new Error("画布导航已停止，请重新载入。");
         doc = mounted;
         presentation = createPresentation(doc);
+        if (presentation) presentation.activate(Math.min(pageIndex, presentation.slides.length - 1));
         renderPages();
         fitCanvas();
         helperNodes = new Set(doc.querySelectorAll(`[data-editor-helper="${helperToken}"]`));
@@ -649,13 +880,17 @@ function initializeEditor() {
         busy = false;
         $("loadState").hidden = true;
         refresh();
+        if (restored) {
+          $("documentSize").textContent = `${(new TextEncoder().encode(html).byteLength / 1024).toFixed(1)} KB`;
+          scheduleDraft();
+        }
       } catch (error) { loadFailure(error); }
     };
     canvas.srcdoc = `${doctype ? new XMLSerializer().serializeToString(doctype) : ""}\n${sourceDoc.documentElement.outerHTML}`;
     mountTimer = setTimeout(() => loadFailure(new Error("画布载入超时，请重试。")), 20000);
   }
 
-  function serializedHtml() {
+  function serializedHtml(includePending = false) {
     const clone = doc.cloneNode(true);
     const originals = [doc.documentElement, ...doc.documentElement.querySelectorAll("*")];
     const copies = [clone.documentElement, ...clone.documentElement.querySelectorAll("*")];
@@ -666,6 +901,29 @@ function initializeEditor() {
       const mode = shadowModes.get(element.getAttribute("data-hwb-editor-node-key"));
       if (mode !== undefined) copies[index].setAttribute("shadowrootmode", mode);
     });
+    if (includePending) {
+      const target = copies[originals.indexOf(selected)];
+      if (target && cssDraft) {
+        const style = document.createElement("div").style;
+        const text = $("advancedCss").value.trim();
+        style.cssText = text;
+        if (!text || style.length) target.setAttribute("style", style.cssText);
+      }
+      if (target && propertyDraft) {
+        const { property, value } = propertyDraft;
+        if (!value || CSS.supports(property, value)) {
+          const style = document.createElement("div").style;
+          if (value) style.setProperty(property, value);
+          target.setAttribute("style", updateRawProperty(target.getAttribute("style") || "", property, style.cssText));
+        }
+      }
+      if (notesDraft && presentation?.notesAvailable) {
+        const node = clone.querySelector("script#notes-data");
+        const notes = JSON.parse(node.textContent);
+        notes[presentation.index] = $("notesEditor").value;
+        node.textContent = JSON.stringify(notes).replace(/[<>&\u2028\u2029]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+      }
+    }
     presentation?.restoreClone(clone);
     return serializeDocument(clone, doctype);
   }
@@ -711,7 +969,13 @@ function initializeEditor() {
     if (busy) return;
     if (hasChanges() && !confirm("重新载入会丢失未保存更改，继续？")) return;
     if (!id) { loadFailure(new Error("缺少文档 ID，请从发布台打开文档。")); return; }
+    if (hasChanges()) persistDraft();
     const current = ++generation;
+    draftOwner = crypto.randomUUID();
+    restoredDraft = null;
+    recovery = null;
+    $("draftRecovery").hidden = true;
+    $("draftState").textContent = "";
     busy = true;
     dirty = false;
     cssDraft = false;
@@ -734,11 +998,13 @@ function initializeEditor() {
       if ((payload.record.uploadKind || "html") !== "html") throw new Error("仅支持单个 HTML 文件，ZIP 包无法编辑。");
       createSaveRequest(payload.html, payload.version);
       record = payload.record;
+      serverHtml = payload.html;
       version = response.headers.get("ETag") || payload.version;
       $("documentTitle").textContent = record.title || record.originalName || "未命名 HTML";
       document.title = `${$("documentTitle").textContent} · HTML 编辑器`;
       $("documentSize").textContent = `${(new TextEncoder().encode(payload.html).byteLength / 1024).toFixed(1)} KB`;
       mount(payload.html);
+      checkDrafts(current);
     } catch (error) { if (current === generation) loadFailure(error); }
   }
 
@@ -753,6 +1019,7 @@ function initializeEditor() {
     try {
       const html = serializedHtml();
       const options = createSaveRequest(html, version);
+      persistDraft(html);
       busy = true;
       updateToolbar();
       options.headers["X-CSRF-Token"] = await fetchSession();
@@ -761,12 +1028,14 @@ function initializeEditor() {
       if (!payload.version || !payload.record) throw new Error("保存响应不完整，请确认服务器状态后重试。");
       record = payload.record;
       version = response.headers.get("ETag") || payload.version;
+      serverHtml = html;
       dirty = false;
       history = newHistory();
+      await clearPublishedDrafts();
       $("documentSize").textContent = `${(new TextEncoder().encode(html).byteLength / 1024).toFixed(1)} KB`;
       showMessage("已保存并发布。");
     } catch (error) { showMessage(error.message || "保存失败，当前更改仍保留。"); }
-    finally { busy = false; updateToolbar(); drawOutlines(); }
+    finally { busy = false; updateToolbar(); drawOutlines(); if (hasChanges()) persistDraft(); }
   }
 
   controls.forEach((control) => control.addEventListener("change", () => applyProperty(control.dataset.style, control.value.trim(), control)));
@@ -779,20 +1048,46 @@ function initializeEditor() {
   [...controls, ...colors].forEach((control) => control.addEventListener("input", () => {
     propertyDraft = { control, property: control.dataset.style || control.dataset.color, value: control.dataset.color ? colorValue(control) : control.value.trim() };
     updateToolbar();
+    scheduleDraft();
   }));
-  $("advancedCss").addEventListener("input", () => { cssDraft = true; updateToolbar(); });
+  $("advancedCss").addEventListener("input", () => { cssDraft = true; updateToolbar(); scheduleDraft(); });
   $("applyCssButton").addEventListener("click", applyAdvancedCss);
   $("deleteButton").addEventListener("click", removeSelected);
   $("editTextButton").addEventListener("click", () => beginText(selected));
   $("replaceImageButton").addEventListener("click", () => $("imageFile").click());
   $("imageFile").addEventListener("change", replaceImage);
-  $("notesEditor").addEventListener("input", () => { notesDraft = true; updateToolbar(); });
+  $("notesEditor").addEventListener("input", () => { notesDraft = true; updateToolbar(); scheduleDraft(); });
   $("notesEditor").addEventListener("change", finishNotes);
   $("pagesTab").addEventListener("click", () => setPanelView(true));
   $("modulesTab").addEventListener("click", () => setPanelView(false));
   $("undoButton").addEventListener("click", () => navigateHistory("undo"));
   $("redoButton").addEventListener("click", () => navigateHistory("redo"));
   $("saveButton").addEventListener("click", save);
+  $("exportButton").addEventListener("click", exportCurrent);
+  $("restoreDraftButton").addEventListener("click", restoreLocalDraft);
+  $("exportDraftButton").addEventListener("click", () => { if (recovery) exportHtml(recovery.html, `${recovery.title}-草稿`); });
+  $("discardDraftButton").addEventListener("click", discardLocalDraft);
+  $("zoomLevel").addEventListener("change", () => setZoom($("zoomLevel").value));
+  $("zoomLevel").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); setZoom($("zoomLevel").value); } });
+  $("zoomInButton").addEventListener("click", () => setZoom(Math.min(200, Math.round(canvasScale * 100) + 10)));
+  $("zoomOutButton").addEventListener("click", () => setZoom(Math.min(200, Math.max(10, Math.round(canvasScale * 100) - 10))));
+  $("actualSizeButton").addEventListener("click", () => setZoom(100));
+  $("fitCanvasButton").addEventListener("click", () => setZoom("fit"));
+  $("panButton").addEventListener("click", () => setPan(!panMode));
+  const viewport = $("canvasViewport");
+  viewport.addEventListener("pointerdown", event => {
+    if (!panMode || busy || event.button !== 0) return;
+    event.preventDefault();
+    panStart = { x: event.clientX, y: event.clientY, left: viewport.scrollLeft, top: viewport.scrollTop };
+    viewport.setPointerCapture(event.pointerId);
+    viewport.dataset.dragging = "true";
+  });
+  viewport.addEventListener("pointermove", event => {
+    if (!panStart) return;
+    viewport.scrollLeft = panStart.left - (event.clientX - panStart.x);
+    viewport.scrollTop = panStart.top - (event.clientY - panStart.y);
+  });
+  for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) viewport.addEventListener(type, () => { panStart = null; delete viewport.dataset.dragging; });
   $("retryButton").addEventListener("click", load);
   $("parentButton").addEventListener("click", () => select(selected?.parentElement, true));
   $("childButton").addEventListener("click", () => select(firstChild(selected), true));
@@ -807,8 +1102,10 @@ function initializeEditor() {
   document.querySelectorAll("[data-close-drawer]").forEach((button) => button.addEventListener("click", () => setDrawer("")));
   document.addEventListener("keydown", keyboard);
   window.addEventListener("beforeunload", (event) => {
+    if (hasChanges()) persistDraft();
     if (hasChanges() || busy && doc) { event.preventDefault(); event.returnValue = ""; }
   });
+  document.addEventListener("visibilitychange", () => { if (document.hidden && hasChanges()) persistDraft(); });
   new ResizeObserver(fitCanvas).observe($("canvasViewport"));
   window.addEventListener("resize", () => { if (innerWidth >= 900) setDrawer(""); fitCanvas(); });
   load();

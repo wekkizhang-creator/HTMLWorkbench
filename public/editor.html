@@ -10,15 +10,17 @@
 <body>
   <header class="topbar">
     <a class="brand" id="backLink" href="/" title="返回发布台"><img src="/brand-logo.png" alt="HTML 发布台"><span>HTML 编辑器</span></a>
-    <div class="document-heading"><h1 id="documentTitle">载入文档</h1><span id="saveState" role="status">等待载入</span></div>
+    <div class="document-heading"><h1 id="documentTitle">载入文档</h1><span id="saveState" role="status">等待载入</span><span id="draftState" role="status"></span></div>
     <div class="actions">
       <button id="undoButton" class="icon-button" title="撤销" aria-label="撤销" disabled><svg viewBox="0 0 24 24"><path d="m9 5-5 5 5 5M4 10h10a6 6 0 0 1 0 12"/></svg></button>
       <button id="redoButton" class="icon-button" title="重做" aria-label="重做" disabled><svg viewBox="0 0 24 24"><path d="m15 5 5 5-5 5m5-5H10a6 6 0 0 0 0 12"/></svg></button>
       <button id="previewButton" class="icon-button" title="预览已发布页面" aria-label="预览已发布页面" disabled><svg viewBox="0 0 24 24"><path d="M14 3h7v7m0-7L10 14M10 3H3v18h18v-7"/></svg></button>
+      <button id="exportButton" class="icon-button" title="导出当前 HTML" aria-label="导出当前 HTML" disabled><svg data-lucide="download" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg></button>
       <button id="saveButton" class="primary" disabled><svg viewBox="0 0 24 24"><path d="M5 3h12l4 4v14H3V3h2Zm2 0v7h10V3M7 21v-7h10v7"/></svg><span>保存并发布</span></button>
     </div>
   </header>
   <div class="message" id="message" role="alert" hidden></div>
+  <div class="draft-recovery" id="draftRecovery" role="status" hidden><p id="draftRecoveryMessage"></p><div class="draft-actions"><button id="restoreDraftButton" type="button">恢复草稿</button><button id="exportDraftButton" type="button">导出草稿</button><button id="discardDraftButton" type="button">删除草稿</button></div></div>
   <main class="workbench" id="workbench" data-drawer="">
     <button id="drawerBackdrop" class="drawer-backdrop" aria-label="关闭侧栏" tabindex="-1"></button>
     <aside class="module-panel" id="treePanel" aria-label="模块">
@@ -38,10 +40,20 @@
           <button id="inspectorToggle" class="icon-button mobile-only" title="属性" aria-label="打开属性" aria-controls="inspectorPanel" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 17h16M8 4v6m8 4v6"/></svg></button>
         </div>
       </div>
+      <div class="view-controls" id="viewControls" aria-label="画布视图" hidden>
+        <button id="zoomOutButton" class="icon-button" title="缩小画布" aria-label="缩小画布"><svg data-lucide="minus" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+        <label class="zoom-input"><input id="zoomLevel" type="number" min="10" max="200" step="10" aria-label="画布缩放比例"><span aria-hidden="true">%</span></label>
+        <button id="zoomInButton" class="icon-button" title="放大画布" aria-label="放大画布"><svg data-lucide="plus" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
+        <button id="actualSizeButton" class="size-button" title="原始大小" aria-label="原始大小">100%</button>
+        <button id="fitCanvasButton" class="icon-button" title="适应窗口" aria-label="适应窗口" aria-pressed="true"><svg data-lucide="scan" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/></svg></button>
+        <button id="panButton" class="icon-button" title="平移画布" aria-label="平移画布" aria-pressed="false"><svg data-lucide="move" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20"/><path d="m15 19-3 3-3-3"/><path d="m19 9 3 3-3 3"/><path d="M2 12h20"/><path d="m5 9-3 3 3 3"/><path d="m9 5 3-3 3 3"/></svg></button>
+      </div>
       <div class="canvas-viewport" id="canvasViewport">
-        <iframe id="editorCanvas" title="HTML 编辑画布" sandbox="allow-same-origin" referrerpolicy="no-referrer"></iframe>
-        <div id="hoverOutline" class="outline hover-outline" hidden></div>
-        <div id="selectionOutline" class="outline selection-outline" hidden></div>
+        <div id="canvasSurface" class="canvas-surface">
+          <iframe id="editorCanvas" title="HTML 编辑画布" sandbox="allow-same-origin" referrerpolicy="no-referrer"></iframe>
+          <div id="hoverOutline" class="outline hover-outline" hidden></div>
+          <div id="selectionOutline" class="outline selection-outline" hidden></div>
+        </div>
         <div id="loadState" class="load-state" role="status"><span id="loadMessage">正在载入文档…</span><button id="retryButton" hidden>重试</button></div>
       </div>
       <footer class="canvas-footer"><span id="selectionLabel">未选择元素</span><span id="pageIndicator" hidden></span><span id="documentSize">--</span></footer>
