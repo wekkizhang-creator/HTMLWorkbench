@@ -22,10 +22,30 @@ test("editor refinements browser acceptance", { skip: !process.env.EDITOR_PLAYWR
   const origin = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch({ channel: "chrome", headless: true });
   t.after(async () => { await browser.close(); await new Promise(resolve => server.close(resolve)); });
-  async function openEditor(subtest, { storageUnavailable = false, html = fixture } = {}) {
+  async function openEditor(subtest, { storageUnavailable = false, controlledDrafts = false, html = fixture } = {}) {
     const context = await browser.newContext({ viewport: { width: 1440, height: 960 }, acceptDownloads: true });
     subtest.after(() => context.close());
     if (storageUnavailable) await context.addInitScript(() => Object.defineProperty(window, "indexedDB", { value: null }));
+    if (controlledDrafts) await context.route("**/editor-drafts.mjs", route => route.fulfill({
+      contentType: "text/javascript",
+      body: `import { createDraftStore as realStore } from "/editor-drafts.mjs?real";
+        export function createDraftStore() {
+          const store = realStore();
+          const control = window.draftIO = { calls: [], hold: null };
+          return { ...store, ...Object.fromEntries(["write", "remove"].map(method => [method, async (...args) => {
+            control.calls.push({ method, args });
+            if (control.hold === method) {
+              control.hold = null;
+              await new Promise((resolve, reject) => {
+                control.release = resolve;
+                control.fail = () => reject(new Error("Synthetic storage failure"));
+              });
+              control.release = null;
+            }
+            return store[method](...args);
+          }])) };
+        }`
+    }));
     const state = { html, version: '"v1"', writes: [], saveStatus: 200 };
     await context.route("**/api/**", async route => {
       const request = route.request();
@@ -50,6 +70,16 @@ test("editor refinements browser acceptance", { skip: !process.env.EDITOR_PLAYWR
   }
   async function waitDraft(page) {
     await page.waitForFunction(() => document.getElementById("draftState")?.textContent.includes("本地草稿已保存"));
+  }
+  async function drafts(page) {
+    return page.evaluate(async () => {
+      const store = (await import("/editor-drafts.mjs?real")).createDraftStore();
+      try { return await store.list("test"); } finally { store.close(); }
+    });
+  }
+  async function waitCleanDraft(page) {
+    await page.waitForFunction(() => document.getElementById("draftState").textContent === "");
+    assert.equal(await page.locator("#saveState").getAttribute("data-dirty"), "false");
   }
   async function download(page, button) {
     const pending = page.waitForEvent("download");
@@ -116,6 +146,98 @@ test("editor refinements browser acceptance", { skip: !process.env.EDITOR_PLAYWR
     await page.waitForTimeout(300);
     assert.equal(await page.locator("#draftRecovery").isVisible(), false);
   });
+
+  await t.test("returning unblurred text to its original removes only the current owner's persisted draft", async subtest => {
+    const { page, frame, state } = await openEditor(subtest);
+    const heading = frame.locator("#one");
+    await heading.dblclick();
+    await heading.fill("Obsolete pending heading");
+    await waitDraft(page);
+    const [obsolete] = await drafts(page);
+    assert.match(obsolete.html, /Obsolete pending heading/);
+    const other = { ...obsolete, ownerId: "other-tab", html: fixture.replace("First page", "Other tab heading") };
+    await page.evaluate(async entry => {
+      const store = (await import("/editor-drafts.mjs?real")).createDraftStore();
+      try { await store.write(entry); } finally { store.close(); }
+    }, other);
+    await heading.fill("First page");
+    assert.equal(await page.locator("#saveState").getAttribute("data-dirty"), "false");
+    assert.equal(await heading.evaluate(el => el === el.ownerDocument.activeElement), true);
+    await waitCleanDraft(page);
+    assert.deepEqual(await drafts(page), [other]);
+    await page.reload();
+    await page.locator("#draftRecovery").waitFor({ state: "visible" });
+    assert.match(await download(page, "#exportDraftButton"), /Other tab heading/);
+    await page.locator("#discardDraftButton").click();
+    await page.locator("#draftRecovery").waitFor({ state: "hidden" });
+    assert.deepEqual(await drafts(page), []);
+    assert.equal(state.writes.length, 0);
+  });
+
+  for (const next of ["clean", "later edit", "new load"]) {
+    await t.test(`clean draft removal waits for outstanding writes and preserves ${next}`, async subtest => {
+      const { page, frame } = await openEditor(subtest, { controlledDrafts: true });
+      await page.evaluate(() => { window.draftIO.hold = "write"; });
+      await frame.locator("#one").dblclick();
+      await frame.locator("#one").fill("Outstanding obsolete write");
+      await page.waitForFunction(() => Boolean(window.draftIO.release));
+      await frame.locator("#one").fill("First page");
+      assert.equal(await page.locator("#saveState").getAttribute("data-dirty"), "false");
+      assert.equal(await page.evaluate(() => window.draftIO.calls.some(call => call.method === "remove")), false);
+      if (next === "new load") {
+        // Exercise an in-page load without destroying the outstanding promise queue.
+        await page.locator("#retryButton").evaluate(button => button.click());
+        await page.locator("#loadState").waitFor({ state: "hidden" });
+        await frame.locator("#one").dblclick();
+      }
+      if (next !== "clean") {
+        await frame.locator("#one").fill("Newer pending heading");
+        await page.waitForTimeout(850);
+      }
+      await page.evaluate(() => window.draftIO.release());
+      if (next === "clean") {
+        await waitCleanDraft(page);
+        assert.deepEqual(await drafts(page), []);
+        await page.reload();
+        await page.locator("#loadState").waitFor({ state: "hidden" });
+        assert.deepEqual(await drafts(page), []);
+        assert.equal(await page.locator("#draftRecovery").isVisible(), false);
+      } else {
+        await waitDraft(page);
+        const entries = await drafts(page);
+        assert.equal(entries.length, 1);
+        assert.match(entries[0].html, /Newer pending heading/);
+        const calls = await page.evaluate(() => window.draftIO.calls);
+        assert.deepEqual(calls.map(call => call.method), ["write", "remove", "write"]);
+        assert.equal(calls[1].args[1], calls[0].args[0].ownerId);
+        if (next === "new load") assert.notEqual(entries[0].ownerId, calls[0].args[0].ownerId);
+      }
+    });
+  }
+
+  for (const fail of [false, true]) {
+    await t.test(`delayed clean draft removal ${fail ? "failure" : "completion"} does not clear later-edit status`, async subtest => {
+      const { page, frame } = await openEditor(subtest, { controlledDrafts: true });
+      await frame.locator("#one").dblclick();
+      await frame.locator("#one").fill("Previously persisted heading");
+      await waitDraft(page);
+      await page.evaluate(() => { window.draftIO.hold = "remove"; });
+      await frame.locator("#one").fill("First page");
+      await page.waitForFunction(() => Boolean(window.draftIO.release));
+      await frame.locator("#one").fill("Later pending heading");
+      await page.evaluate(shouldFail => {
+        window.draftIO.hold = "write";
+        if (shouldFail) window.draftIO.fail(); else window.draftIO.release();
+      }, fail);
+      await page.waitForFunction(() => window.draftIO.calls.filter(call => call.method === "write").length === 2);
+      assert.equal(await page.locator("#draftState").textContent(), "草稿待保存");
+      await page.evaluate(() => window.draftIO.release());
+      await waitDraft(page);
+      const entries = await drafts(page);
+      assert.equal(entries.length, 1);
+      assert.match(entries[0].html, /Later pending heading/);
+    });
+  }
 
   await t.test("a stale draft is export-only and never changes the published base", async subtest => {
     const { page, frame, state } = await openEditor(subtest);

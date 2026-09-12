@@ -549,7 +549,16 @@ function initializeEditor() {
   function scheduleDraft() {
     clearTimeout(draftTimer);
     draftRevision++;
-    if (!doc || !record || !hasChanges()) return;
+    if (!doc || !record) return;
+    if (!hasChanges()) {
+      const owner = draftOwner, current = generation, revision = draftRevision;
+      const stillClean = () => owner === draftOwner && current === generation && revision === draftRevision && !hasChanges();
+      // Remove this owner's obsolete snapshot after its writes, before later edits persist.
+      draftQueue = draftQueue.then(() => draftStore?.remove(id, owner)).then(() => {
+        if (stillClean()) $("draftState").textContent = "";
+      }).catch(() => { if (stillClean()) draftUnavailable(); });
+      return;
+    }
     $("draftState").textContent = "草稿待保存";
     draftTimer = setTimeout(persistDraft, 750);
   }
