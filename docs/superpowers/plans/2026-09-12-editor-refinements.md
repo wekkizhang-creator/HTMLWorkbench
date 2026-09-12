@@ -41,16 +41,25 @@ Owned files: new `public/editor-drafts.mjs`, new `tests/editor-drafts.test.mjs`.
 
 Owned by coordinator: `public/editor.js`, `public/editor.html`, `public/editor.css`, thumbnail helper if useful, integration/browser tests, docs.
 
-- [ ] Add failing browser regressions for the two confirmed bugs, no thumbnail source writes on selection, recovery and zoom controls.
-- [ ] Wrap all history execution with affected page/element metadata. Refresh only affected previews and activate affected page on undo/redo. Keep notes-only changes out of visual thumbnail invalidation.
-- [ ] Implement bounded preview cache (8 entries/8 MiB), maintain positional CSS and opaque script-free thumbnail frames, invalidate on edits not selection.
-- [ ] Integrate 750-ms local draft capture, recovery banner and current/draft HTML export. Capture pending valid styles and notes on a clone; never auto-apply recovery or remove other owners' new drafts. Stale base versions are export-only. Storage errors remain nonblocking.
-- [ ] Introduce scrollable canvas surface plus fit/manual zoom (10-200%) and pointer pan mode. Fit stays default; preserve fixed source size, overlay positioning and focus. Add accessible icon controls and mobile layout.
-- [ ] Verify save conflicts keep drafts and successful save removes only the intended snapshots. No source scripts/helper-state leakage in exports or recovery.
+- [x] Add failing browser regressions for the two confirmed bugs, no thumbnail source writes on selection, recovery and zoom controls.
+- [x] Wrap all history execution with affected page/element metadata. Refresh only affected previews and activate affected page on undo/redo. Keep notes-only changes out of visual thumbnail invalidation.
+- [x] Implement bounded preview cache (8 entries/8 MiB), maintain positional CSS and opaque script-free thumbnail frames, invalidate on edits not selection.
+- [x] Integrate 750-ms local draft capture, recovery banner and current/draft HTML export. Capture pending valid styles and notes on a clone; never auto-apply recovery or remove other owners' new drafts. Stale base versions are export-only. Storage errors remain nonblocking.
+- [x] Introduce scrollable canvas surface plus fit/manual zoom (10-200%) and pointer pan mode. Fit stays default; preserve fixed source size, overlay positioning and focus. Add accessible icon controls and mobile layout.
+- [x] Verify save conflicts keep drafts and successful save removes only the intended snapshots. No source scripts/helper-state leakage in exports or recovery.
 
 ## Task 4: Dependencies And Completion
 
 - [x] Record failing audit evidence, update only compatible undici resolution and install the lockfile.
-- [ ] Run full Node checks, existing editor/presentation/workflow browser suites, new browser acceptance, actual sample desktop/mobile screenshots and dependency audit.
-- [ ] Independent task/final review; fix all material findings and rerun covering tests.
-- [ ] Commit final code/docs, provide local demo and state deployment status accurately.
+- [x] Run full Node checks, existing editor/presentation/workflow browser suites, new browser acceptance, actual sample desktop/mobile screenshots and dependency audit.
+- [x] Independent task/final review; fix all material findings and rerun covering tests.
+- [x] Commit final code/docs, provide local demo and state deployment status accurately.
+
+## Acceptance Results
+
+- `npm.cmd run check`: 215 passed, 5 opt-in browser entries skipped, 0 failed.
+- Explicit browser run covering editor, refinements, IndexedDB, presentation and live publishing/rollback: 75 passed, 0 skipped, 0 failed.
+- Real 23-page presentation browser acceptance: passed; 1440px and 390px screenshots inspected for clipping, overlap and canvas framing.
+- `npm.cmd audit --json`: 0 vulnerabilities after the compatible undici lockfile update.
+- Independent final review found one obsolete clean-owner draft issue. Commit `9c30bc3` fixes it with six red/green regressions; focused rereview approved.
+- All implementation is local to the existing feature branch. No push, deployment or production document mutation was performed in this refinement task.
