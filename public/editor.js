@@ -38,6 +38,31 @@ function restoreChildren(element, snapshots) {
   }
 }
 
+function updateRawProperty(raw, property, declaration) {
+  // Split only top-level declarations; strings, comments and function bodies may contain semicolons.
+  const parts = [];
+  let start = 0, quote = "", comment = false, depth = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i], next = raw[i + 1];
+    if (comment) { if (c === "*" && next === "/") { comment = false; i++; } continue; }
+    if (c === "\\") { i++; continue; }
+    if (quote) { if (c === quote) quote = ""; continue; }
+    if (c === "/" && next === "*") { comment = true; i++; continue; }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if ("([{".includes(c)) depth++;
+    if (")]}".includes(c)) depth--;
+    if (c === ";" && depth === 0) { parts.push(raw.slice(start, i + 1)); start = i + 1; }
+  }
+  parts.push(raw.slice(start));
+  const kept = parts.map((part) => {
+    const name = part.replace(/\/\*[\s\S]*?\*\//g, "").split(":", 1)[0].trim()
+      .replace(/\\([\da-f]{1,6})\s?|\\(.)/gi, (_, hex, char) => hex ? String.fromCodePoint(parseInt(hex, 16) || 0xfffd) : char);
+    return name.toLowerCase() !== property ? part : (part.match(/^(?:\s|\/\*[\s\S]*?\*\/)*/)?.[0] || "");
+  }).join("");
+  const tail = kept.replace(/\/\*[\s\S]*?\*\//g, "").trimEnd();
+  return kept + (tail && !tail.endsWith(";") ? ";" : "") + declaration;
+}
+
 function initializeEditor() {
   const $ = (id) => document.getElementById(id);
   const canvas = $("editorCanvas");
@@ -62,6 +87,7 @@ function initializeEditor() {
   let frameCleanup = () => {};
   let helperNodes = new Set();
   let refreshAttributes = new Map();
+  let shadowModes = new Map();
   let rows = new Map();
   let history = newHistory();
 
@@ -96,10 +122,11 @@ function initializeEditor() {
     $("styleInspector").hidden = !selected;
     $("parentButton").disabled = busy || !editable(selected?.parentElement);
     $("childButton").disabled = busy || !firstChild(selected);
+    $("editTextButton").disabled = busy || !safeTextTarget(selected);
   }
 
   function editable(element) {
-    return Boolean(element && doc?.body?.contains(element) && !isProtectedElement(element));
+    return Boolean(element && doc?.body?.contains(element) && element.tagName !== "TEMPLATE" && !isProtectedElement(element));
   }
 
   function firstChild(element) {
@@ -135,7 +162,7 @@ function initializeEditor() {
         const span = document.createElement("span");
         span.textContent = label;
         row.append(span);
-        row.addEventListener("click", () => { if (select(element, true)) setDrawer(""); });
+        row.addEventListener("click", () => { if (select(element, true)) { setDrawer(""); rows.get(element)?.focus(); } });
         rows.set(element, row);
         fragment.append(row);
         visit(element, depth + 1);
@@ -174,10 +201,17 @@ function initializeEditor() {
       control.removeAttribute("aria-invalid");
     }
     for (const control of colors) {
-      const components = computed.getPropertyValue(control.dataset.color).match(/[\d.]+/g);
-      control.value = components?.length >= 3 ? `#${components.slice(0, 3).map((n) => Math.round(Number(n)).toString(16).padStart(2, "0")).join("")}` : "#000000";
+      const value = computed.getPropertyValue(control.dataset.color);
+      const context = document.createElement("canvas").getContext("2d", { colorSpace: "srgb" });
+      context.fillStyle = value;
+      context.fillRect(0, 0, 1, 1);
+      const rgba = context.getImageData(0, 0, 1, 1).data;
+      control.value = `#${[...rgba].slice(0, 3).map((n) => n.toString(16).padStart(2, "0")).join("")}`;
+      control.dataset.alpha = String(rgba[3] / 255);
+      control.style.opacity = String(Math.max(0.25, rgba[3] / 255));
+      control.title = value;
     }
-    $("advancedCss").value = selected.style.cssText;
+    $("advancedCss").value = selected.getAttribute("style") || "";
     cssDraft = false;
     propertyDraft = null;
   }
@@ -208,7 +242,7 @@ function initializeEditor() {
   function safeTextTarget(target) {
     for (let element = target; editable(element); element = element.parentElement) {
       if (/^(INPUT|TEXTAREA|SELECT|BUTTON|IFRAME|OBJECT|IMG|VIDEO|AUDIO|SVG|CANVAS|BR|HR)$/.test(element.tagName)) return null;
-      if (element.querySelector("script,style,link,meta,iframe,object,input,textarea,select,button,img,video,audio,svg,canvas")) return null;
+      if (element.querySelector("template,script,style,link,meta,iframe,object,input,textarea,select,button,img,video,audio,svg,canvas")) return null;
       if (![...element.children].some((child) => /^(DIV|P|SECTION|ARTICLE|UL|OL|LI|TABLE|H[1-6])$/.test(child.tagName))) return element;
     }
     return null;
@@ -245,7 +279,7 @@ function initializeEditor() {
     if ((before || "") === cssText) { cssDraft = false; updateToolbar(); return; }
     history.execute({
       undo() { if (before === null) element.removeAttribute("style"); else element.setAttribute("style", before); },
-      redo() { element.style.cssText = cssText; }
+      redo() { element.setAttribute("style", cssText); }
     });
   }
 
@@ -253,7 +287,6 @@ function initializeEditor() {
     if (!selected || busy) return false;
     if (cssDraft && !applyAdvancedCss()) return false;
     const style = document.createElement("div").style;
-    style.cssText = selected.style.cssText;
     if (value && !CSS.supports(property, value)) {
       control?.setAttribute("aria-invalid", "true");
       showMessage(`无效的 ${property} 值：${value}`);
@@ -263,7 +296,7 @@ function initializeEditor() {
     else style.removeProperty(property);
     propertyDraft = null;
     showMessage();
-    applyStyle(style.cssText);
+    applyStyle(updateRawProperty(selected.getAttribute("style") || "", property, style.cssText));
     return true;
   }
 
@@ -313,7 +346,22 @@ function initializeEditor() {
   }
 
   function keyboard(event) {
-    if (event.key === "Escape") { finishText(); setDrawer(""); return; }
+    if (event.key === "Escape") {
+      const wasText = Boolean(textSession);
+      finishText(); setDrawer("");
+      if (wasText) { event.preventDefault(); $("editTextButton").focus(); }
+      return;
+    }
+    const drawer = $("workbench").dataset.drawer;
+    if (drawer && event.key === "Tab") {
+      const panel = $(drawer === "tree" ? "treePanel" : "inspectorPanel");
+      const focusable = [...panel.querySelectorAll("button,input,select,textarea,summary,[tabindex]")]
+        .filter((el) => !el.matches(":disabled") && el.tabIndex >= 0 && el.getClientRects().length);
+      const index = focusable.indexOf(document.activeElement);
+      event.preventDefault();
+      focusable[(index + (event.shiftKey ? -1 : 1) + focusable.length) % focusable.length]?.focus();
+      return;
+    }
     const typing = event.target.closest?.("input,textarea,select,[contenteditable='true']");
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
       event.preventDefault(); save(); return;
@@ -331,6 +379,14 @@ function initializeEditor() {
     $("workbench").dataset.drawer = name;
     $("treeToggle").setAttribute("aria-expanded", String(name === "tree"));
     $("inspectorToggle").setAttribute("aria-expanded", String(name === "inspector"));
+    document.querySelector(".topbar").inert = Boolean(name);
+    document.querySelector(".canvas-panel").inert = Boolean(name);
+    for (const panelName of ["tree", "inspector"]) {
+      const panel = $(panelName === "tree" ? "treePanel" : "inspectorPanel");
+      panel.inert = Boolean(name && name !== panelName);
+      if (name === panelName) { panel.setAttribute("role", "dialog"); panel.setAttribute("aria-modal", "true"); }
+      else { panel.removeAttribute("role"); panel.removeAttribute("aria-modal"); }
+    }
     if (name) $(name === "tree" ? "treePanel" : "inspectorPanel").querySelector("button")?.focus();
     else if (previous) $(previous === "tree" ? "treeToggle" : "inspectorToggle").focus();
   }
@@ -390,6 +446,12 @@ function initializeEditor() {
     sourceDoc = new DOMParser().parseFromString(html, "text/html");
     doctype = sourceDoc.doctype?.cloneNode() || null;
     assignEditorNodeIds(sourceDoc);
+    // Keep declarative shadow content opaque instead of letting srcdoc consume its templates.
+    shadowModes = new Map();
+    for (const template of sourceDoc.querySelectorAll("template[shadowrootmode]")) {
+      shadowModes.set(template.getAttribute("data-hwb-editor-node-key"), template.getAttribute("shadowrootmode"));
+      template.setAttribute("shadowrootmode", "editor-inert");
+    }
     const helperToken = crypto.randomUUID();
     refreshAttributes = new Map();
     for (const meta of sourceDoc.querySelectorAll("meta[http-equiv]")) {
@@ -404,11 +466,14 @@ function initializeEditor() {
     policy.content = "script-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'";
     policy.dataset.editorHelper = helperToken;
     sourceDoc.head.prepend(policy);
-    if (!sourceDoc.querySelector("base[href]")) {
+    {
       const base = sourceDoc.createElement("base");
-      base.href = previewUrl(record.url, location.href);
+      const publicBase = previewUrl(record.url, location.href);
+      const originalBase = sourceDoc.querySelector("base[href]");
+      base.href = originalBase ? new URL(originalBase.getAttribute("href"), publicBase).href : publicBase;
       base.dataset.editorHelper = helperToken;
-      sourceDoc.head.append(base);
+      // Resolve before resources and uploaded CSP base-uri restrictions are parsed.
+      sourceDoc.head.prepend(base);
     }
     canvas.onload = () => {
       clearTimeout(mountTimer);
@@ -436,6 +501,8 @@ function initializeEditor() {
       if (helperNodes.has(element)) copies[index].remove();
       const refresh = refreshAttributes.get(element.getAttribute("data-hwb-editor-node-key"));
       if (refresh) copies[index].setAttribute("http-equiv", refresh);
+      const mode = shadowModes.get(element.getAttribute("data-hwb-editor-node-key"));
+      if (mode !== undefined) copies[index].setAttribute("shadowrootmode", mode);
     });
     return serializeDocument(clone, doctype);
   }
@@ -539,14 +606,19 @@ function initializeEditor() {
   }
 
   controls.forEach((control) => control.addEventListener("change", () => applyProperty(control.dataset.style, control.value.trim(), control)));
-  colors.forEach((control) => control.addEventListener("change", () => applyProperty(control.dataset.color, control.value, control)));
+  function colorValue(control) {
+    const alpha = Number(control.dataset.alpha ?? 1);
+    return alpha === 1 ? control.value : `rgb(${[1, 3, 5].map((i) => parseInt(control.value.slice(i, i + 2), 16)).join(" ")} / ${alpha})`;
+  }
+  colors.forEach((control) => control.addEventListener("change", () => applyProperty(control.dataset.color, colorValue(control), control)));
   [...controls, ...colors].forEach((control) => control.addEventListener("input", () => {
-    propertyDraft = { control, property: control.dataset.style || control.dataset.color, value: control.value.trim() };
+    propertyDraft = { control, property: control.dataset.style || control.dataset.color, value: control.dataset.color ? colorValue(control) : control.value.trim() };
     updateToolbar();
   }));
   $("advancedCss").addEventListener("input", () => { cssDraft = true; updateToolbar(); });
   $("applyCssButton").addEventListener("click", applyAdvancedCss);
   $("deleteButton").addEventListener("click", removeSelected);
+  $("editTextButton").addEventListener("click", () => beginText(selected));
   $("undoButton").addEventListener("click", () => navigateHistory("undo"));
   $("redoButton").addEventListener("click", () => navigateHistory("redo"));
   $("saveButton").addEventListener("click", save);
@@ -566,7 +638,7 @@ function initializeEditor() {
   window.addEventListener("beforeunload", (event) => {
     if (hasChanges() || busy && doc) { event.preventDefault(); event.returnValue = ""; }
   });
-  window.addEventListener("resize", drawOutlines);
+  window.addEventListener("resize", () => { if (innerWidth >= 900) setDrawer(""); drawOutlines(); });
   load();
 }
 

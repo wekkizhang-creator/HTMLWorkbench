@@ -87,6 +87,14 @@ test("editor preserves the management UI CSRF handshake for every save", async (
   assert.match(js, /uploadKind/);
 });
 
+test("raw property updates preserve CSS token boundaries and untouched declarations", async () => {
+  const h = await helpers();
+  const prefix = 'display:-moz-box;display:flex;--text:"a;\\\"b";--block:{a:b;c:d};background:url("data:image/svg+xml;a;b");';
+  assert.equal(h.updateRawProperty(prefix + '/*keep;*/font-size:12px!important;', "font-size", "font-size: 25px;"), prefix + '/*keep;*/font-size: 25px;');
+  assert.equal(h.updateRawProperty(prefix + 'FONT-SIZE:12px;f\\6f nt-size:14px;', "font-size", ""), prefix);
+  assert.equal(h.updateRawProperty("color:red", "font-size", "font-size: 25px;"), "color:red;font-size: 25px;");
+});
+
 // Opt-in real browser coverage uses a caller-provided Playwright installation, not a runtime dependency.
 if (process.env.EDITOR_PLAYWRIGHT_MODULE) {
   test("real browser editor acceptance", async (t) => {
@@ -101,6 +109,8 @@ if (process.env.EDITOR_PLAYWRIGHT_MODULE) {
       <section id="module" data-business="preserve"><h1 id="heading" contenteditable="false" spellcheck="true" data-hwb-editor-id="customer-id" data-hwb-selected="customer-selection">Original <em data-business="inline">heading</em></h1>
       <p id="text">Editable text</p><a href="/escaped" id="link">Stay here</a><form action="/escaped"><input value="original"><button>Submit</button></form></section>
       <div class="spacer"></div><footer>Footer</footer></body></html>`;
+    let fixture = original;
+    let publicUrl = "/view/test";
     let saved = "";
     let saveStatus = 200;
     let loadStatus = 200;
@@ -134,7 +144,7 @@ if (process.env.EDITOR_PLAYWRIGHT_MODULE) {
           res.end(JSON.stringify({ record: { title: "Fixture", url: "/view/test", uploadKind: "html" }, version: currentVersion }));
         } else {
           res.writeHead(loadStatus, { "Content-Type": "application/json", ETag: currentVersion });
-          res.end(JSON.stringify({ html: original, record: { title: "Fixture", url: "/view/test", uploadKind: "html" }, version: currentVersion }));
+          res.end(JSON.stringify({ html: fixture, record: { title: "Fixture", url: publicUrl, uploadKind: "html" }, version: currentVersion }));
         }
         return;
       }
@@ -153,12 +163,112 @@ if (process.env.EDITOR_PLAYWRIGHT_MODULE) {
     page.setDefaultTimeout(5000);
     page.setDefaultNavigationTimeout(5000);
     const errors = [];
+    const resourceRequests = [];
+    page.on("request", (request) => { if (request.url().endsWith("fixture.css")) resourceRequests.push(request.url()); });
     page.on("pageerror", (error) => errors.push(error.message));
     const frame = () => page.frames().find((item) => item.parentFrame());
     const ready = async () => { await page.goto(`${origin}/editor.html?id=test`); await page.locator("#loadState").waitFor({ state: "hidden" }); };
     const selectHeading = async () => page.locator('.tree-row[title^="h1#heading"]').click();
     const changeSize = async (value) => { const input = page.getByRole("textbox", { name: "字号", exact: true }); await input.fill(value); await input.press("Tab"); };
     try {
+      await t.test("I1 opaque open and closed shadow templates survive unrelated edit and save", async () => {
+        const templates = ["open", "closed"].map((mode) => `<template shadowrootmode="${mode}" data-business="${mode}"><style>span{color:red}</style><span data-business="shadow">Shadow content</span><script>window.shadowFixture=true;</script><template shadowrootmode="closed"><b>Nested</b></template></template>`);
+        fixture = `<html><head></head><body><h1 id="heading">Probe</h1>${templates.map((html) => `<div>${html}</div>`).join("")}</body></html>`;
+        await ready(); await selectHeading(); await changeSize("25px");
+        assert.equal(await frame().locator("body").evaluate((el) => [...el.querySelectorAll("div")].some((host) => host.shadowRoot)), false);
+        await page.locator("#undoButton").click(); await page.locator("#redoButton").click();
+        await page.locator("#saveButton").click();
+        await page.waitForFunction(() => document.getElementById("saveState").dataset.dirty === "false");
+        for (const template of templates) assert.ok(saved.includes(template), saved);
+        assert.doesNotMatch(saved, /data-hwb-editor-node-key|data-editor-helper/);
+        await changeSize("26px"); await page.locator("#saveButton").click();
+        await page.waitForFunction(() => document.getElementById("saveState").dataset.dirty === "false");
+        for (const template of templates) assert.ok(saved.includes(template), saved);
+      });
+      await t.test("I2 raw unrelated CSS survives property edits, undo, redo and save", async () => {
+        const raw = 'color:oklch(60% 0.2 200);-moz-user-select:none;display:-moz-box;display:flex;--label:"a;b";/*keep;*/font-size:12px;';
+        fixture = `<h1 id="heading" style='${raw}'>Probe</h1>`;
+        await ready(); await selectHeading(); await changeSize("25px");
+        const edited = await frame().locator("#heading").getAttribute("style");
+        assert.ok(edited.startsWith(raw.split("/*keep;*/")[0]), edited);
+        await page.locator("#undoButton").click();
+        assert.equal(await frame().locator("#heading").getAttribute("style"), raw);
+        await page.locator("#redoButton").click();
+        assert.equal(await frame().locator("#heading").getAttribute("style"), edited);
+        await page.locator("#saveButton").click();
+        await page.waitForFunction(() => document.getElementById("saveState").dataset.dirty === "false");
+        assert.match(saved, /-moz-user-select:none;display:-moz-box;display:flex;/);
+      });
+      await t.test("I3 public base precedes resources and original relative base survives save", async () => {
+        const hits = [];
+        const content = createServer((req, res) => { hits.push(req.url); res.writeHead(200, { "Content-Type": "text/css", "Access-Control-Allow-Origin": "*" }); res.end("#heading{color:rgb(10,120,30)}"); });
+        await new Promise((resolve) => content.listen(0, "127.0.0.1", resolve));
+        try {
+          for (const csp of ["", '<meta http-equiv="Content-Security-Policy" content="base-uri \'none\'">']) for (const base of ["", '<base href="./assets/">']) {
+            hits.length = 0;
+            resourceRequests.length = 0;
+            publicUrl = `http://127.0.0.1:${content.address().port}/view/test`;
+            fixture = `<html><head>${csp}${base}<link rel="stylesheet" href="${base ? "fixture.css" : "./assets/fixture.css"}"></head><body><h1 id="heading">Probe</h1></body></html>`;
+            await ready();
+            assert.deepEqual(hits, ["/view/assets/fixture.css"]);
+            assert.deepEqual(resourceRequests, [`http://127.0.0.1:${content.address().port}/view/assets/fixture.css`]);
+            assert.equal(await frame().locator("#heading").evaluate((el) => getComputedStyle(el).color), "rgb(10, 120, 30)");
+            await selectHeading(); await changeSize("25px"); await page.locator("#saveButton").click();
+            await page.waitForFunction(() => document.getElementById("saveState").dataset.dirty === "false");
+            if (base) assert.ok(saved.includes(base)); else assert.doesNotMatch(saved, /<base/);
+            if (csp) assert.ok(saved.includes(csp));
+          }
+        } finally { publicUrl = "/view/test"; await new Promise((resolve) => content.close(resolve)); }
+      });
+      await t.test("I4 keyboard selection, text entry, commit, undo, redo and save", async () => {
+        fixture = original; await ready();
+        for (let i = 0; i < 30 && !(await page.locator('.tree-row[title="p#text"]').evaluate((el) => el === document.activeElement)); i++) await page.keyboard.press("Tab");
+        assert.equal(await page.locator('.tree-row[title="p#text"]').evaluate((el) => el === document.activeElement), true);
+        await page.keyboard.press("Enter");
+        for (let i = 0; i < 40 && !(await page.locator("#editTextButton").evaluate((el) => el === document.activeElement)); i++) await page.keyboard.press("Tab");
+        await page.keyboard.press("Enter");
+        assert.equal(await frame().locator("#text").getAttribute("contenteditable"), "true");
+        await page.keyboard.press("Control+a"); await page.keyboard.type("Keyboard revision"); await page.keyboard.press("Escape");
+        assert.equal(await page.locator("#editTextButton").evaluate((el) => el === document.activeElement), true);
+        await page.keyboard.press("Control+z");
+        assert.equal(await frame().locator("#text").textContent(), "Editable text");
+        await page.keyboard.press("Control+Shift+z"); await page.keyboard.press("Control+s");
+        await page.waitForFunction(() => document.getElementById("saveState").dataset.dirty === "false");
+        assert.match(saved, /Keyboard revision/);
+      });
+      await t.test("M1 mobile drawers trap full forward and backward focus cycles", async () => {
+        fixture = original; await ready(); await selectHeading(); await page.setViewportSize({ width: 390, height: 844 });
+        for (const name of ["tree", "inspector"]) {
+          await page.locator(`#${name}Toggle`).click();
+          for (const key of ["Tab", "Shift+Tab"]) for (let i = 0; i < 40; i++) {
+            await page.keyboard.press(key);
+            assert.equal(await page.locator(`#${name}Panel`).evaluate((el) => el.contains(document.activeElement)), true);
+          }
+          await page.keyboard.press("Escape");
+          assert.equal(await page.locator(`#${name}Toggle`).evaluate((el) => el === document.activeElement), true);
+        }
+        await page.locator("#inspectorToggle").click();
+        await page.setViewportSize({ width: 1440, height: 960 });
+        await page.waitForFunction(() => document.getElementById("workbench").dataset.drawer === "");
+        assert.equal(await page.locator("#workbench").getAttribute("data-drawer"), "");
+        assert.equal(await page.locator(".canvas-panel").evaluate((el) => el.inert), false);
+      });
+      await t.test("M2 non-RGB colors convert through sRGB and retain transparency", async () => {
+        fixture = '<h1 id="heading" style="color:oklch(60% 0.2 200);background-color:color(display-p3 1 0 0 / 0.5)">Probe</h1>';
+        await ready(); await selectHeading();
+        const expected = await frame().locator("#heading").evaluate((el) => {
+          const ctx = document.createElement("canvas").getContext("2d"); ctx.fillStyle = getComputedStyle(el).color; ctx.fillRect(0, 0, 1, 1);
+          return '#' + [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3).map((n) => n.toString(16).padStart(2, '0')).join('');
+        });
+        assert.equal(await page.locator('[data-color="color"]').inputValue(), expected);
+        assert.equal(await page.locator('[data-color="background-color"]').getAttribute("data-alpha"), String(128 / 255));
+        await page.locator('[data-color="background-color"]').fill("#00ff00");
+        await page.locator('[data-color="background-color"]').press("Tab");
+        assert.equal(await frame().locator("#heading").evaluate((el) => getComputedStyle(el).backgroundColor), "rgba(0, 255, 0, 0.5)");
+        await page.locator("#saveButton").click();
+        await page.waitForFunction(() => document.getElementById("saveState").dataset.dirty === "false");
+        fixture = original;
+      });
       await t.test("safe mount, original scripts paused, navigation blocked, tree and parent/child selection", async () => {
         await ready();
         assert.equal(await page.locator("#editorCanvas").getAttribute("sandbox"), "allow-same-origin");
