@@ -44,6 +44,24 @@ BLOB_READ_WRITE_TOKEN=<private Blob read-write token>
 npm run check
 ```
 
+## HTML 可视化编辑
+
+上传记录中的“编辑”打开三栏工作台：模块树、画布和属性面板。支持文字编辑、常用样式、高级 CSS、删除模块、撤销和重做；手机宽度使用抽屉面板。仅单 HTML 文件提供编辑入口，ZIP 站点暂不支持。
+
+“保存并发布”直接更新原公开链接，同时保留保存前的单个历史版本供列表回滚。源文件被其他操作修改时，保存会提示冲突，不覆盖新版本。未保存的修改在离开页面前会提示。
+
+编辑画布暂停页面脚本，但发布源码保留脚本。脚本驱动的内容在画布中可能与公开页不同；声明式 Shadow DOM 模板保留为不透明内容，不在画布中展开编辑。编辑接口和页面仅由管理服务提供。
+
+可选浏览器验收需要本机 Chrome 及 Playwright。PowerShell 示例：
+
+```powershell
+$env:EDITOR_PLAYWRIGHT_MODULE = 'C:/path/to/node_modules/playwright'
+$env:EDITOR_SCREENSHOT_DIR = '.superpowers/sdd/final-qa'
+node --test tests/editor-ui.test.mjs tests/editor-workflow.test.mjs
+```
+
+浏览器验收覆盖交互、隔离、错误状态，以及桌面和手机的列表入口、发布、公开页和回滚。未设置 `EDITOR_PLAYWRIGHT_MODULE` 时，默认测试不启动浏览器。
+
 ## Self-hosted deployment
 
 Production uses two Node processes from the same immutable release:
