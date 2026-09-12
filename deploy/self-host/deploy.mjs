@@ -156,6 +156,7 @@ async function serviceFlag(run, operation, service) {
     if (result.code === 0 && activeStates.has(state)) return true;
     if (result.code === 3 && (state === "inactive" || state === "failed")) return false;
     if (result.code === 4 && (state === "not-found" || state === "unknown")) return false;
+    if (result.code === 4 && state === "inactive" && !await serviceLoaded(run, service)) return false;
   } else if (operation === "is-enabled") {
     if (enabledStates.has(state) && result.code === 0) return true;
     if (disabledStates.has(state)) return false;
@@ -168,10 +169,11 @@ async function serviceFlag(run, operation, service) {
 async function captureServiceState(run) {
   const state = new Map();
   for (const service of SERVICE_NAMES) {
+    const loaded = await serviceLoaded(run, service);
     state.set(service, {
-      loaded: await serviceLoaded(run, service),
-      active: await serviceFlag(run, "is-active", service),
-      enabled: await serviceFlag(run, "is-enabled", service)
+      loaded,
+      active: loaded ? await serviceFlag(run, "is-active", service) : false,
+      enabled: loaded ? await serviceFlag(run, "is-enabled", service) : false
     });
   }
   return state;

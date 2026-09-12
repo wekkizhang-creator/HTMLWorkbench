@@ -106,6 +106,9 @@ async function createHarness(options = {}) {
     if (command === "git" && args[0] === "checkout") await copyReleaseFixture(runOptions.cwd);
     if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: `${DEPLOY_SHA}\n`, stderr: "" };
     if (command === "systemctl" && args[0] === "is-active") {
+      if (args.at(-1) === CONTENT_SERVICE && !await exists(paths.contentUnit)) {
+        return { code: 4, stdout: "inactive\n", stderr: "" };
+      }
       if (options.systemctlIsActiveFails && args.at(-1) === ADMIN_SERVICE) {
         return { code: 1, stdout: "", stderr: "Failed to connect to bus" };
       }
