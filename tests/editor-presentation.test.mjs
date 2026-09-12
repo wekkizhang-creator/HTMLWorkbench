@@ -20,7 +20,7 @@ test('presentation browser contract', { skip: !process.env.EDITOR_PLAYWRIGHT_MOD
   const fixture = `<html><head><base href="https://example.com/"><style>
     body { margin: 30px; } main { transform: scale(.6); padding: 25px; }
     .stage { width: 1200px; height: 700px; position: relative; }
-    .slide { display: none; position: absolute; width: 100%; height: 100%; opacity: 0; }
+    .slide { display: grid; position: absolute; width: 100%; height: 100%; opacity: 0; }
     .slide.active { display: grid; opacity: 1; }
     </style></head><body><nav>Toolbar</nav><main style="color: red"><div class="stage">
     <section class="slide active" hidden="until-found" aria-hidden="false" data-hwb-editor-node-key="author"><h1>One</h1></section>
@@ -71,6 +71,21 @@ test('presentation browser contract', { skip: !process.env.EDITOR_PLAYWRIGHT_MOD
     });
     assert.deepEqual(result, { visible: ['none','none','none','none'], restored: true, stable: true, size: [1200,700,0,0,1200,700], disposed: true });
   });
+  await t.test('class-controlled inactive display is rejected with complete rollback', async () => {
+    const result = await page.evaluate(() => {
+      makeDoc(fixture.replace('.slide { display: grid;', '.slide { display: none;'));
+      const original = document.cloneNode(true);
+      const a = createPresentation(document);
+      const rejected = a === null;
+      a?.dispose();
+      const restored = original.documentElement.isEqualNode(document.documentElement);
+      document.querySelectorAll('.slide')[1].style.display = 'grid';
+      const retry = createPresentation(document);
+      const retrySupported = Boolean(retry); retry?.dispose();
+      return { rejected, restored, retrySupported };
+    });
+    assert.deepEqual(result, { rejected: true, restored: true, retrySupported: true });
+  });
   await t.test('hidden page two retains flex/grid layout and footer inside the canvas', async () => {
     for (const layout of ['flex', 'grid']) {
       const result = await page.evaluate((layout) => {
@@ -100,7 +115,7 @@ test('presentation browser contract', { skip: !process.env.EDITOR_PLAYWRIGHT_MOD
       const preview = await browser.newPage();
       try {
         await preview.setContent(result.html);
-        assert.deepEqual(await preview.evaluate(() => [getComputedStyle(document.querySelector('.slide')).display,
+        assert.deepEqual(await preview.evaluate(() => [getComputedStyle(document.querySelector('.slide:not([hidden])')).display,
           document.querySelector('footer').getBoundingClientRect().bottom <= 810]), [layout, true]);
       } finally { await preview.close(); }
     }
@@ -131,12 +146,39 @@ test('presentation browser contract', { skip: !process.env.EDITOR_PLAYWRIGHT_MOD
       const html = a.thumbnailHtml(1);
       const clone = new DOMParser().parseFromString(html,'text/html');
       const result = { unchanged: before === document.documentElement.outerHTML && a.index === 0,
-        slides: clone.querySelectorAll('.slide').length, text: clone.querySelector('.slide').textContent,
+        slides: clone.querySelectorAll('.slide').length, text: clone.querySelector('.slide:not([hidden])').textContent,
         unsafe: clone.querySelectorAll('script,iframe,object,embed,meta[http-equiv="refresh"]').length,
         base: clone.querySelector('base').getAttribute('href'), styles: clone.querySelectorAll('style').length };
       a.dispose(); return result;
     });
-    assert.deepEqual(result,{unchanged:true,slides:1,text:'Two',unsafe:0,base:'https://example.com/',styles:2});
+    assert.deepEqual(result,{unchanged:true,slides:2,text:'Two',unsafe:0,base:'https://example.com/',styles:2});
+  });
+  await t.test('thumbnail preserves first-child and nth-child slide styling', async () => {
+    const result = await page.evaluate(() => {
+      makeDoc(`<style>.stage{width:1440px;height:810px}.slide{display:grid}
+        .slide:first-child{padding:10px;color:rgb(255,0,0)}
+        .slide:nth-child(2){padding:40px;color:rgb(0,128,0)}</style>
+        <div class="stage"><section class="slide">One</section><section class="slide">Two</section></div>`);
+      const a = createPresentation(document); a.activate(1);
+      const computed = getComputedStyle(a.slides[1]);
+      const expected = [computed.paddingTop, computed.color];
+      const before = document.documentElement.outerHTML;
+      const html = a.thumbnailHtml(1);
+      const unchanged = before === document.documentElement.outerHTML;
+      a.dispose(); return { expected, html, unchanged };
+    });
+    assert.equal(result.unchanged, true);
+    const preview = await browser.newPage();
+    try {
+      await preview.setContent(result.html);
+      assert.deepEqual(await preview.evaluate(() => {
+        const slides = [...document.querySelectorAll('.slide')];
+        const selected = slides.find(node => getComputedStyle(node).display !== 'none');
+        const computed = getComputedStyle(selected);
+        return { count: slides.length, visible: slides.filter(node => getComputedStyle(node).display !== 'none').length,
+          style: [computed.paddingTop, computed.color] };
+      }), { count: 2, visible: 1, style: result.expected });
+    } finally { await preview.close(); }
   });
   await t.test('core cleanup restores colliding author keys and temporary attribute names', async () => {
     assert.equal(await page.evaluate(() => {
@@ -170,7 +212,7 @@ test('presentation browser contract', { skip: !process.env.EDITOR_PLAYWRIGHT_MOD
     try {
       await preview.setContent(html);
       assert.deepEqual(await preview.evaluate(() => {
-        const r = document.querySelector('.slide').getBoundingClientRect();
+        const r = document.querySelector('.slide:not([hidden])').getBoundingClientRect();
         return [r.x,r.y,r.width,r.height, getComputedStyle(document.querySelector('nav')).display, Boolean(window.uploadedRan)];
       }),[0,0,1200,700,'none',false]);
     } finally { await preview.close(); }

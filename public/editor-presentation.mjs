@@ -75,10 +75,11 @@ export function createPresentation(doc) {
   for (const node of route) mark(node, 'path');
   // Measure author layout only after snapshotting and clearing hidden state.
   slides.forEach((slide, i) => mark(slide, `slide-${i}`));
-  const displays = slides.map(slide => {
-    const display = view.getComputedStyle(slide).display;
-    return display === 'none' ? 'block' : display;
-  });
+  const displays = slides.map(slide => view.getComputedStyle(slide).display);
+  if (displays.includes('none')) {
+    for (const { node, originals } of records) restore(node, originals);
+    return null;
+  }
   const style = doc.createElement('style');
   style.setAttribute(marker, 'override');
   doc.head.append(style);
@@ -156,8 +157,9 @@ ${selected} { display: ${displays[chosen]} !important; position: absolute !impor
       if (disposed) throw new Error('Presentation adapter is disposed');
       const clone = doc.cloneNode(true);
       clone.querySelectorAll(`[${marker}^="slide-"]`).forEach(node => {
-        if (node.getAttribute(marker) !== `slide-${value}`) node.remove();
-        else { node.removeAttribute('hidden'); node.setAttribute('aria-hidden', 'false'); }
+        const selected = node.getAttribute(marker) === `slide-${value}`;
+        node.toggleAttribute('hidden', !selected);
+        node.setAttribute('aria-hidden', String(!selected));
       });
       clone.querySelector(`style[${marker}="override"]`).textContent = css(value);
       clone.querySelectorAll('script,iframe,object,embed,meta[http-equiv]').forEach(node => {
