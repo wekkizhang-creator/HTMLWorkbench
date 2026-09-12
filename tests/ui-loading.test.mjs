@@ -378,6 +378,18 @@ async function createAppHarness(initialResponses = []) {
   };
 }
 
+test("only single HTML records offer an editor link", async () => {
+  const html = sampleRecord({ id: "html-record", uploadKind: "html" });
+  const zip = sampleRecord({ id: "zip-record", uploadKind: "zip" });
+  const legacy = sampleRecord({ id: "legacy-record", uploadKind: undefined });
+  const harness = await createAppHarness([recordsResponse([html, zip, legacy])]);
+  await waitFor(() => harness.elements.recordBody.children.length === 3);
+  const rows = harness.elements.recordBody.children;
+  assert.match(rows[0].innerHTML, /data-action="edit" href="\/editor\.html\?id=html-record"/);
+  assert.doesNotMatch(rows[1].innerHTML, /data-action="edit"/);
+  assert.match(rows[2].innerHTML, /href="\/editor\.html\?id=legacy-record"/);
+});
+
 test("startup obtains a CSRF token before asking for the first 50 records", async () => {
   const record = sampleRecord();
   const harness = await createAppHarness([recordsResponse([record])]);

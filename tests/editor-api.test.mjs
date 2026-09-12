@@ -101,6 +101,7 @@ async function startServer(env) {
       try {
         await request(origin, "GET", "/healthz", { host });
         return {
+          dataDir,
           host,
           origin,
           async close() {
@@ -354,5 +355,56 @@ test("admin editor API reads, saves and detects stale versions", async () => {
     assert.equal(stale.status, 409);
   } finally {
     await adminServer.close();
+  }
+});
+
+test("editor save updates the public URL and rollback restores original source", async () => {
+  const server = await startServer({
+    HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",
+    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun"
+  });
+  const port = await reservePort();
+  const content = spawn(process.execPath, ["server.js"], {
+    cwd: process.cwd(),
+    env: { ...process.env, HTML_WORKBENCH_ROLE: "content", HTML_WORKBENCH_DATA_DIR: server.dataDir,
+      HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun", HOST: "127.0.0.1", PORT: String(port) },
+    stdio: ["ignore", "ignore", "pipe"]
+  });
+  const publicOrigin = `http://127.0.0.1:${port}`;
+  try {
+    const original = '<!doctype html><html><head><style>h1{color:red}</style></head><body><h1 data-business="keep">原始文案</h1><script>window.example=1;</script></body></html>';
+    await fs.writeFile(path.join(server.dataDir, "uploads", `${TEST_ID}.html`), original);
+    let ready = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try {
+        const response = await request(publicOrigin, "GET", "/healthz", { host: "page.wekki.fun" });
+        if (response.status === 200) { ready = true; break; }
+      } catch { /* The child may not have bound its port yet. */ }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.equal(ready, true, "content server starts");
+    const first = await authorizedRequest(server, "GET", `/api/uploads/${TEST_ID}/content`);
+    const edited = original.replace("原始文案", "修改后的文案");
+    const saved = await authorizedRequest(server, "PUT", `/api/uploads/${TEST_ID}/content`, {
+      body: edited, headers: { "Content-Type": "text/html", "If-Match": first.json.version }
+    });
+    assert.equal(saved.status, 200);
+    assert.equal(saved.json.record.url, first.json.record.url);
+    assert.equal(saved.json.record.hasPreviousVersion, true);
+    const published = await request(publicOrigin, "GET", `/view/${TEST_ID}`, { host: "page.wekki.fun" });
+    assert.equal(published.status, 200);
+    assert.ok(published.body.includes("修改后的文案"));
+    assert.ok(published.body.includes('<script>window.example=1;</script>'));
+    const rollback = await authorizedRequest(server, "PATCH", `/api/uploads/${TEST_ID}`);
+    assert.equal(rollback.status, 200);
+    const restored = await authorizedRequest(server, "GET", `/api/uploads/${TEST_ID}/content`);
+    assert.equal(restored.json.html, original);
+    assert.equal(restored.json.record.hasPreviousVersion, false);
+    const publicRestored = await request(publicOrigin, "GET", `/view/${TEST_ID}`, { host: "page.wekki.fun" });
+    assert.ok(publicRestored.body.includes("原始文案"));
+    assert.ok(!publicRestored.body.includes("修改后的文案"));
+  } finally {
+    if (content.exitCode === null) await new Promise(resolve => { content.once("exit", resolve); content.kill(); });
+    await server.close();
   }
 });

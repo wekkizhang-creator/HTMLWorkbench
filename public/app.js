@@ -75,6 +75,7 @@ const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
 
 function icon(name) {
   const icons = {
+    edit: '<path d="m16 3 5 5-13 13H3v-5L16 3ZM14 5l5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
     copy: '<rect x="8" y="8" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h9a1 1 0 0 1 1 1v1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
     external: '<path d="M14 4h6v6M10 14 20 4M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
     replace: '<path d="M17 3v5h-5M7 21v-5h5M17 8a7 7 0 0 0-11.6-2.7M7 16a7 7 0 0 0 11.6 2.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
@@ -400,6 +401,7 @@ function renderRecords({ enteringRecordIds = [], successRecordId = null } = {}) 
           <button class="button secondary" type="button" data-action="copy" data-url="${link}">${icon("copy")}复制</button>
           <a class="button secondary" href="${link}" target="_blank" rel="noopener">${icon("external")}打开</a>
           <button class="button secondary" type="button" data-action="replace">${icon("replace")}替换</button>
+          ${(record.uploadKind || "html") === "html" ? `<a class="button secondary" data-action="edit" href="/editor.html?id=${encodeURIComponent(record.id)}">${icon("edit")}编辑</a>` : ""}
           <button class="button secondary" type="button" data-action="rollback" ${record.hasPreviousVersion ? "" : "disabled"}>${icon("rollback")}回滚</button>
           <button class="button secondary danger" type="button" data-action="delete">${icon("trash")}删除</button>
         </div>
