@@ -107,7 +107,10 @@ function removeLocations(block) {
 }
 
 function withInclude(block, includePath) {
-  const withoutLocations = removeLocations(block).replace(new RegExp(`^\\s*include\\s+${includePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*;\\s*$`, "gm"), "");
+  let withoutLocations = removeLocations(block).replace(new RegExp(`^\\s*include\\s+${includePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*;\\s*$`, "gm"), "");
+  if (includePath === ADMIN_SNIPPET_PATH) {
+    withoutLocations = withoutLocations.replace(/^\s*client_max_body_size\s+[^;]+;[^\S\r\n]*(?:#[^\r\n]*)?$/gm, "");
+  }
   const closing = withoutLocations.lastIndexOf("}");
   return `${withoutLocations.slice(0, closing).trimEnd()}\n    include ${includePath};\n${withoutLocations.slice(closing)}`;
 }

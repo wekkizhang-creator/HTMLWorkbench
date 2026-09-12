@@ -59,6 +59,14 @@ HTML_WORKBENCH_CURSOR_SECRET='production cursor secret'
 `;
 }
 
+test("adopting a legacy admin host removes the body limit now owned by its snippet", () => {
+  const legacy = certbotHostConfig().replace("    server_name ho.wekki.fun;", "    server_name ho.wekki.fun;\n    client_max_body_size 32m;");
+  const adopted = buildManagedHostConfig(legacy);
+  assert.doesNotMatch(adopted, /client_max_body_size/);
+  assert.match(adopted, /ssl_certificate \/etc\/letsencrypt\/live\/ho\.wekki\.fun\/fullchain\.pem/);
+  assert.match(adopted, /html-workbench-admin-routes\.conf/);
+});
+
 async function copyReleaseFixture(targetDir) {
   await fs.mkdir(targetDir, { recursive: true });
   await fs.cp("deploy", path.join(targetDir, "deploy"), { recursive: true });
