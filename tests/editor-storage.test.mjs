@@ -134,10 +134,53 @@ test("successive editor saves stage independent rollback files and remain rollba
   assert.equal(second.previousVersion.title, first.title);
   assert.equal(second.previousVersion.uploadedAt, first.uploadedAt);
   assert.equal(await fs.readFile(path.join(f.directory, second.previousVersion.blobPath), "utf8"), edited.toString());
-  await f.assertBytesPreserved();
+  await assert.rejects(fs.access(path.join(f.directory, first.blobPath)), { code: "ENOENT" });
+  await assert.rejects(fs.access(path.join(f.directory, first.previousVersion.blobPath)), { code: "ENOENT" });
   const index = JSON.parse(await fs.readFile(path.join(f.directory, buildRecordIndexPath(second)), "utf8"));
   assert.equal(index.record.uploadedAt, second.uploadedAt);
   const restored = await f.storage.restorePreviousVersion(second);
   assert.equal(await new Response((await f.storage.getUploadContent(restored)).body).text(), edited.toString());
   assert.equal(restored.previousVersion, undefined);
 });
+
+test("repeated successful saves retain only the current revision and delete removes all HTML", async t => {
+  const f = await fixture(t);
+  let record = f.record;
+  let buffer = original;
+  for (let iteration = 0; iteration < 8; iteration++) {
+    const nextBuffer = Buffer.from(`<h1>Edit ${iteration}</h1>`);
+    record = await f.storage.saveEditorReplacement(record, buffer, nextBuffer);
+    const entries = await fs.readdir(path.join(f.directory, "uploads"), { recursive: true, withFileTypes: true });
+    assert.equal(entries.filter(entry => entry.isFile()).length, 2);
+    const revisions = await fs.readdir(path.join(f.directory, "uploads", record.id, "editor"));
+    assert.equal(revisions.length, 1);
+    assert.equal(await fs.readFile(path.join(f.directory, record.previousVersion.blobPath), "utf8"), buffer.toString());
+    buffer = nextBuffer;
+  }
+  await f.storage.deleteUpload(record);
+  const remaining = await fs.readdir(path.join(f.directory, "uploads"), { recursive: true, withFileTypes: true });
+  assert.equal(remaining.filter(entry => entry.isFile()).length, 0);
+});
+
+for (const failedPath of ["blobPath", "previousVersion"]) {
+  test(`successful save stays successful when superseded ${failedPath} cleanup fails`, async t => {
+    const f = await fixture(t);
+    const target = failedPath === "blobPath" ? f.record.blobPath : f.record.previousVersion.blobPath;
+    const remove = fs.rm.bind(fs);
+    let injected = false;
+    t.mock.method(fs, "rm", async (file, ...args) => {
+      if (f.relative(file) === target) {
+        injected = true;
+        throw new Error("Cleanup outage");
+      }
+      return remove(file, ...args);
+    });
+    const saved = await f.storage.saveEditorReplacement(f.record, original, edited);
+    assert.equal(injected, true);
+    t.mock.restoreAll();
+    assert.deepEqual(await f.storage.getRecord(saved.id), JSON.parse(JSON.stringify(saved)));
+    assert.equal(await new Response((await f.storage.getUploadContent(saved)).body).text(), edited.toString());
+    assert.equal(await fs.readFile(path.join(f.directory, saved.previousVersion.blobPath), "utf8"), original.toString());
+    assert.equal((await f.storage.listRecordsPage({ limit: 10 })).records.length, 1);
+  });
+}
