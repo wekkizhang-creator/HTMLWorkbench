@@ -14,6 +14,74 @@ const REPO_URL = "https://github.com/wekkizhang-creator/HTMLWorkbench.git";
 const ADMIN_SERVICE = "html-workbench.service";
 const CONTENT_SERVICE = "html-workbench-content.service";
 
+function tlsHostBlock(names, comment = "") {
+  return `server {
+    listen 443 ssl;
+    server_name ${names};
+    ${comment}
+    ssl_certificate /existing/fullchain.pem;
+    location / { proxy_pass http://127.0.0.1:9999; }
+}
+`;
+}
+
+test("host adoption matches exact uncommented tokens and leaves unrelated TLS blocks unchanged", () => {
+  for (const marker of ["", `${MANAGED_HOST_MARKER}\n`]) {
+    for (const host of ["desk.wekkii.cn", "ho.wekkii.cn"]) {
+      const unrelated = [
+        tlsHostBlock("other.example", `# server_name ${host};`),
+        tlsHostBlock(`sub.${host}`),
+        tlsHostBlock(`${host}.example`),
+        tlsHostBlock(`prefix-${host}`),
+        tlsHostBlock(`${host}-suffix`)
+      ];
+      const source = marker + certbotHostConfig() + tlsHostBlock(host) + unrelated.join("\n");
+      const result = buildManagedHostConfig(source);
+      for (const block of unrelated) assert.ok(result.includes(block), block);
+      assert.equal((result.match(/proxy_pass http:\/\/127\.0\.0\.1:9999/g) || []).length, unrelated.length);
+      assert.equal(buildManagedHostConfig(result), result);
+    }
+  }
+});
+
+test("mixed management/content shared blocks are rejected with an actionable error", () => {
+  for (const marker of ["", `${MANAGED_HOST_MARKER}\n`]) {
+    for (const names of ["desk.wekkii.cn ho.wekkii.cn", "ho.wekki.fun page.wekki.fun"]) {
+      assert.throws(() => buildManagedHostConfig(marker + certbotHostConfig() + tlsHostBlock(names)),
+        /Mixed management\/content.*server_name.*split.*separate server blocks/i);
+    }
+  }
+});
+
+test("same-role shared host blocks remain valid and idempotent", () => {
+  for (const marker of ["", `${MANAGED_HOST_MARKER}\n`]) {
+    const source = marker + tlsHostBlock("ho.wekki.fun desk.wekkii.cn")
+      + tlsHostBlock("page.wekki.fun ho.wekkii.cn");
+    const result = buildManagedHostConfig(source);
+    for (const role of ["admin", "content"]) {
+      assert.equal(result.split(`include /etc/nginx/snippets/html-workbench-${role}-routes.conf;`).length - 1, 1);
+    }
+    assert.equal(buildManagedHostConfig(result), result);
+  }
+});
+
+test("mixed shared block rejection occurs before stop and rolls back both environment files", async () => {
+  const harness = await createHarness({ hostConfig: certbotHostConfig() + tlsHostBlock("desk.wekkii.cn ho.wekkii.cn") });
+  try {
+    const before = new Map();
+    for (const file of [harness.paths.envFile, harness.paths.contentEnvFile, harness.paths.nginxHost,
+      harness.paths.adminSnippet, harness.paths.contentSnippet]) before.set(file, await fs.readFile(file));
+    await assert.rejects(deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, run: harness.run, log() {} }),
+      /Mixed management\/content.*server_name.*split.*separate server blocks/i);
+    assert.equal(harness.commands.some(({ command, args }) => command === "systemctl" && args[0] === "stop"), false);
+    assert.equal(harness.commands.some(({ command, args }) => command === "systemd-run" && args.includes("migrate:record-index")), false);
+    for (const [file, bytes] of before) assert.deepEqual(await fs.readFile(file), bytes);
+    assert.equal(path.resolve(await fs.readlink(harness.paths.currentLink)), path.resolve(harness.previousRelease));
+    assert.equal(harness.serviceState.active.get(ADMIN_SERVICE), true);
+    assert.equal(harness.serviceState.active.get(CONTENT_SERVICE), true);
+  } finally { await harness.cleanup(); }
+});
+
 async function exists(filePath) {
   try { await fs.access(filePath); return true; } catch { return false; }
 }

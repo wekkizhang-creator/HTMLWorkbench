@@ -126,10 +126,14 @@ function withInclude(block, includePath) {
   return `${withoutLocations.slice(0, closing).trimEnd()}\n    include ${includePath};\n${withoutLocations.slice(closing)}`;
 }
 
-function replaceSelectedBlocks(contents, host, includePath, preserveManaged = false) {
-  const matching = serverBlocks(contents).filter(({ source }) => new RegExp(`\\bserver_name\\s+[^;]*\\b${host.replace(/\./g, "\\.")}\\b[^;]*;`).test(source));
+function serverNames(source) {
+  return [...structuralText(source).matchAll(/\bserver_name\s+([^;]+);/g)]
+    .flatMap((match) => match[1].trim().split(/\s+/));
+}
+
+function replaceSelectedBlocks(contents, matching, includePath, preserveManaged = false) {
   if (matching.length === 0) return { contents, found: false };
-  const tls = matching.filter(({ source }) => /\blisten\s+[^;]*443\b|\bssl_certificate\b/.test(source));
+  const tls = matching.filter(({ source }) => /\blisten\s+[^;]*443\b|\bssl_certificate\b/.test(structuralText(source)));
   const selected = new Set((tls.length ? tls : matching).map(({ start }) => start));
   let result = "";
   let cursor = 0;
@@ -145,18 +149,24 @@ function replaceSelectedBlocks(contents, host, includePath, preserveManaged = fa
 
 export function buildManagedHostConfig(existingContents) {
   if (existingContents == null) return bootstrapHostConfig();
+  for (const { source } of serverBlocks(existingContents)) {
+    const hosts = serverNames(source).filter((host) => HOST_SNIPPETS.has(host));
+    if (new Set(hosts.map((host) => HOST_SNIPPETS.get(host))).size > 1) {
+      throw new Error(`Mixed management/content server_name ${hosts.join(" ")}; split these hosts into separate server blocks before deployment`);
+    }
+  }
   const managed = existingContents.includes(MANAGED_HOST_MARKER);
   let result = existingContents;
   for (const [host, snippet] of HOST_SNIPPETS) {
     const matching = serverBlocks(result).filter(({ source }) =>
-      structuralText(source).match(/\bserver_name\s+([^;]+);/)?.[1].trim().split(/\s+/).includes(host));
+      serverNames(source).includes(host));
     if (!matching.length) {
       if (!managed && host === "ho.wekki.fun") {
         throw new Error("Existing Nginx host file does not contain ho.wekki.fun; refusing to replace it");
       }
       result += `\n${bootstrapServer(host, snippet)}\n`;
     } else if (!managed || host.endsWith(".wekkii.cn")) {
-      result = replaceSelectedBlocks(result, host, snippet, managed).contents;
+      result = replaceSelectedBlocks(result, matching, snippet, managed).contents;
     }
   }
   return managed ? result : `${MANAGED_HOST_MARKER}\n${result}`;
