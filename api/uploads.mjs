@@ -10,6 +10,7 @@ import {
   publicRecords
 } from "../lib/records.mjs";
 import {
+  assignPublicLink,
   listRecordsPage,
   saveIndexedRecord,
   savePackageUpload,
@@ -46,7 +47,7 @@ export async function POST(request) {
 
       if (getUploadKind(originalName) === "zip") {
         const packageData = parseZipWebsite(fileBuffer);
-        const temporaryRecord = buildPackageRecord({
+        const temporaryRecord = await assignPublicLink(buildPackageRecord({
           documentType,
           indexBuffer: packageData.indexHtml,
           originalName,
@@ -57,7 +58,7 @@ export async function POST(request) {
           },
           siteFiles: [],
           sourceSize: fileBuffer.length
-        });
+        }));
         const { packageBlob, siteFiles } = await savePackageUpload(
           temporaryRecord.id,
           fileBuffer,
@@ -72,7 +73,7 @@ export async function POST(request) {
         return json({ record: publicRecords([record])[0] }, 201);
       }
 
-      const temporaryRecord = buildRecord({
+      const temporaryRecord = await assignPublicLink(buildRecord({
         fileBuffer,
         originalName,
         documentType,
@@ -81,7 +82,7 @@ export async function POST(request) {
           pathname: "",
           url: ""
         }
-      });
+      }));
       const uploadBlob = await saveUpload(temporaryRecord.id, fileBuffer);
       const record = await saveIndexedRecord({
         ...temporaryRecord,
