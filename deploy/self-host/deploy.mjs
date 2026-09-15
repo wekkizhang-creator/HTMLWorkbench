@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildManagedHostConfig } from "./nginx-config.mjs";
+import { parseSystemdEnvironmentFile } from "./environment-file.mjs";
 
 const ADMIN_SERVICE = "html-workbench.service";
 const CONTENT_SERVICE = "html-workbench-content.service";
@@ -14,6 +15,39 @@ const CONTENT_USER = "htmlworkbench-content";
 const CONTENT_GROUP = "htmlworkbench-content";
 const DATA_GROUP = "htmlworkbench-data";
 const DEPLOY_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
+
+const PRIMARY_ORIGINS = Object.freeze({
+  HTML_WORKBENCH_ADMIN_ORIGIN: "https://desk.wekkii.cn",
+  HTML_WORKBENCH_PUBLIC_ORIGIN: "https://ho.wekkii.cn"
+});
+
+export function migrateOriginEnvironment(contents) {
+  const environment = parseSystemdEnvironmentFile(contents);
+  for (const name of Object.keys(PRIMARY_ORIGINS)) {
+    if (!environment[name]) throw new Error(`Missing ${name}; refusing origin migration`);
+  }
+  // Keep physical lines, quoting, comments and non-origin assignments byte-for-byte.
+  let continued = false;
+  return contents.split(/(?<=\n)/).map((line) => {
+    const wasContinued = continued;
+    const physical = line.replace(/\r?\n$/, "");
+    continued = ((physical.match(/\\+$/)?.[0].length || 0) % 2) === 1;
+    if (wasContinued) return line;
+    const assignment = line.match(/^([ \t]*)(HTML_WORKBENCH_(?:ADMIN|PUBLIC)_ORIGIN)([ \t]*=[ \t]*)(.*?)(\r?\n)?$/);
+    if (!assignment) return line;
+    if (continued) throw new Error(`Multiline ${assignment[2]} requires operator normalization`);
+    const value = assignment[4].match(/^("[^"\r\n]*"|'[^'\r\n]*'|[^\s#'"\\]+)([ \t]*(?:#[^\r\n]*)?)$/);
+    if (!value) throw new Error(`Unsupported ${assignment[2]} syntax; refusing origin migration`);
+    const quote = /^["']/.test(value[1]) ? value[1][0] : "";
+    return `${assignment[1]}${assignment[2]}${assignment[3]}${quote}${PRIMARY_ORIGINS[assignment[2]]}${quote}${value[2]}${assignment[5] || ""}`;
+  }).join("");
+}
+
+function previousOrigin(snapshot, envFile, key, fallback) {
+  const file = snapshot.files.get(envFile);
+  const environment = file?.exists ? parseSystemdEnvironmentFile(file.contents.toString("utf8")) : {};
+  return environment[key] || fallback;
+}
 
 function rooted(rootDir, absolutePath) {
   if (rootDir === path.parse(rootDir).root) return absolutePath;
@@ -269,6 +303,9 @@ async function ensureHostPrerequisites({ paths, releaseDir, run }) {
     await fs.mkdir(path.dirname(paths.envFile), { recursive: true });
     await fs.copyFile(path.join(releaseDir, "deploy/self-host/html-workbench.env.example"), paths.envFile);
   }
+  const adminEnvironment = await fs.readFile(paths.envFile, "utf8");
+  const migratedEnvironment = migrateOriginEnvironment(adminEnvironment);
+  if (migratedEnvironment !== adminEnvironment) await replaceFile(paths.envFile, migratedEnvironment, 0o640);
   await checked(run, "chown", [`root:${ADMIN_GROUP}`, paths.envFile]);
   await checked(run, "chmod", ["640", paths.envFile]);
   await replaceFile(
@@ -329,11 +366,23 @@ async function migrate({ paths, releaseDir, run }) {
 async function checkHealth(run, service, port, host) {
   let lastResult = null;
   for (let attempt = 0; attempt < 30; attempt += 1) {
-    lastResult = await run("curl", ["--fail", "--silent", "--show-error", "--header", `Host: ${host}`, `http://127.0.0.1:${port}/healthz`]);
-    if (lastResult.code === 0) return;
+    lastResult = await run("curl", ["--fail", "--silent", "--show-error", "--connect-timeout", "5", "--max-time", "10",
+      "--output", "/dev/null", "--write-out", "%{http_code}", "--header", `Host: ${host}`, `http://127.0.0.1:${port}/healthz`]);
+    if (lastResult.code === 0 && String(lastResult.stdout).trim() === "200") return;
+    if (lastResult.code === 0) break;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   throw new Error(`${service} readiness check failed: ${String(lastResult?.stderr || "unknown error").trim()}`);
+}
+
+async function checkPrimaryTls(run) {
+  for (const origin of Object.values(PRIMARY_ORIGINS)) {
+    // Validate DNS and TLS only: an old release may legitimately return 404 here.
+    const options = ["--silent", "--show-error", "--proto", "=https", "--noproxy", "*",
+      "--connect-timeout", "10", "--max-time", "20", "--output", "/dev/null"];
+    await checked(run, "curl", [...options, `${origin}/`]);
+    await checked(run, "curl", [...options, "--resolve", `${new URL(origin).hostname}:443:127.0.0.1`, `${origin}/`]);
+  }
 }
 
 async function transactionSnapshot(paths) {
@@ -381,7 +430,13 @@ async function restoreTransaction({ paths, run, serviceState, snapshot, migratio
   await checked(run, "systemctl", ["reload", "nginx"]);
   await restoreActiveState(run, serviceState, migrationFailed);
   if (serviceState.get(ADMIN_SERVICE).active) {
-    await checkHealth(run, ADMIN_SERVICE, 3000, "ho.wekki.fun");
+    await checkHealth(run, ADMIN_SERVICE, 3000, new URL(previousOrigin(snapshot, paths.envFile,
+      "HTML_WORKBENCH_ADMIN_ORIGIN", "https://ho.wekki.fun")).host);
+  }
+  if (!migrationFailed && serviceState.get(CONTENT_SERVICE).active) {
+    await checkHealth(run, CONTENT_SERVICE, 3001, new URL(previousOrigin(snapshot, paths.contentEnvFile,
+      "HTML_WORKBENCH_PUBLIC_ORIGIN", previousOrigin(snapshot, paths.envFile,
+        "HTML_WORKBENCH_PUBLIC_ORIGIN", "https://page.wekki.fun"))).host);
   }
   log("Rollback restored the previous release and managed configuration; data state requires operator review before retrying.");
   if (migrationFailed) log("Migration failed: content remains stopped and disabled. Never run explicit lock recovery without operator confirmation that no migration is active.");
@@ -398,6 +453,7 @@ export async function deployRelease({
 
   await fs.mkdir(paths.releasesDir, { recursive: true });
   const releaseDir = await stageRelease({ deploySha, paths, repoUrl, run });
+  await checkPrimaryTls(run);
   const snapshot = await transactionSnapshot(paths);
   let serviceState;
   let stopped = false;
@@ -438,8 +494,8 @@ export async function deployRelease({
     await checked(run, "systemctl", ["daemon-reload"]);
     await checked(run, "systemctl", ["enable", ADMIN_SERVICE, CONTENT_SERVICE]);
     await checked(run, "systemctl", ["restart", ADMIN_SERVICE, CONTENT_SERVICE]);
-    await checkHealth(run, ADMIN_SERVICE, 3000, "ho.wekki.fun");
-    await checkHealth(run, CONTENT_SERVICE, 3001, "page.wekki.fun");
+    await checkHealth(run, ADMIN_SERVICE, 3000, "desk.wekkii.cn");
+    await checkHealth(run, CONTENT_SERVICE, 3001, "ho.wekkii.cn");
     await checked(run, "nginx", ["-t"]);
     await checked(run, "systemctl", ["reload", "nginx"]);
     log(`HTMLWorkbench release ${deploySha} deployed successfully.`);

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createDeploymentPaths, deployRelease } from "../deploy/self-host/deploy.mjs";
+import { createDeploymentPaths, deployRelease, migrateOriginEnvironment } from "../deploy/self-host/deploy.mjs";
 import { parseSystemdEnvironmentFile, validateEffectiveEnvironment } from "../deploy/self-host/validate-env.mjs";
 import { buildManagedHostConfig, MANAGED_HOST_MARKER } from "../deploy/self-host/nginx-config.mjs";
 
@@ -109,6 +110,15 @@ async function createHarness(options = {}) {
   let nginxTestCount = 0;
   const run = async (command, args = [], runOptions = {}) => {
     commands.push({ command, args: [...args], cwd: runOptions.cwd });
+    if (command === "curl") {
+      if (args.some((arg) => arg.startsWith("https://")) && options.tlsFails) {
+        return { code: 60, stdout: "", stderr: "certificate verification failed" };
+      }
+      if (options.redirectHealth && args.includes("Host: desk.wekkii.cn")) {
+        return { code: 0, stdout: "302", stderr: "" };
+      }
+      return { code: 0, stdout: "200", stderr: "" };
+    }
     if (command === "getent" && args[0] === "group") return { code: 2, stdout: "", stderr: "" };
     if (command === "id") return { code: 1, stdout: "", stderr: "" };
     if (command === "git" && args[0] === "checkout") await copyReleaseFixture(runOptions.cwd);
@@ -224,7 +234,7 @@ test("first install stages the exact SHA without mutating the legacy checkout", 
     assert.match(harness.commands[preflightIndex].args.join(" "), /EnvironmentFile=.*html-workbench\.env/);
     const healthIndexes = harness.commands
       .map((entry, index) => ({ entry, index }))
-      .filter(({ entry }) => entry.command === "curl")
+      .filter(({ entry }) => entry.command === "curl" && entry.args.includes("--header"))
       .map(({ index }) => index);
     const nginxTests = harness.commands
       .map((entry, index) => ({ entry, index }))
@@ -386,8 +396,8 @@ HTML_WORKBENCH_AUTH_SECRET='quoted auth'
 HTML_WORKBENCH_DOWNLOAD_PASSWORD=""
 HTML_WORKBENCH_CURSOR_SECRET='cursor value'
 HTML_WORKBENCH_DATA_DIR=/var/lib/html-workbench
-HTML_WORKBENCH_ADMIN_ORIGIN=https://ho.wekki.fun
-HTML_WORKBENCH_PUBLIC_ORIGIN=https://page.wekki.fun
+HTML_WORKBENCH_ADMIN_ORIGIN=https://desk.wekkii.cn
+HTML_WORKBENCH_PUBLIC_ORIGIN=https://ho.wekkii.cn
 `);
   assert.equal(parsed.HTML_WORKBENCH_PASSWORD, "last value");
   assert.equal(parsed.HTML_WORKBENCH_AUTH_SECRET, "quoted auth");
@@ -410,14 +420,14 @@ test("deployment rejects an effectively empty quoted credential before stopping 
   } finally { await harness.cleanup(); }
 });
 test("production environment accepts explicitly configured 885688 credentials", () => {
-  const parsed = parseSystemdEnvironmentFile(validEnvironmentFile());
+  const parsed = parseSystemdEnvironmentFile(migrateOriginEnvironment(validEnvironmentFile()));
   parsed.HTML_WORKBENCH_PASSWORD = "885688";
   parsed.HTML_WORKBENCH_DOWNLOAD_PASSWORD = "885688";
   assert.equal(validateEffectiveEnvironment(parsed), true);
 });
 
 test("production environment requires an independent strong auth signing secret", () => {
-  const parsed = parseSystemdEnvironmentFile(validEnvironmentFile());
+  const parsed = parseSystemdEnvironmentFile(migrateOriginEnvironment(validEnvironmentFile()));
   for (const secret of ["", "change-this-auth-secret", "885688", "short-secret", "a".repeat(64)]) {
     parsed.HTML_WORKBENCH_AUTH_SECRET = secret;
     assert.throws(
@@ -430,7 +440,7 @@ test("production environment requires an independent strong auth signing secret"
 });
 
 test("production environment rejects missing credentials instead of silently falling back", () => {
-  const parsed = parseSystemdEnvironmentFile(validEnvironmentFile());
+  const parsed = parseSystemdEnvironmentFile(migrateOriginEnvironment(validEnvironmentFile()));
   delete parsed.HTML_WORKBENCH_PASSWORD;
   assert.throws(() => validateEffectiveEnvironment(parsed), /HTML_WORKBENCH_PASSWORD/);
 });
@@ -438,8 +448,8 @@ test("production environment rejects missing credentials instead of silently fal
 test("content validation profile is non-secret and rejects leaked management credentials", () => {
   const contentEnvironment = {
     HTML_WORKBENCH_DATA_DIR: "/var/lib/html-workbench",
-    HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",
-    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun"
+    HTML_WORKBENCH_ADMIN_ORIGIN: "https://desk.wekkii.cn",
+    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://ho.wekkii.cn"
   };
   assert.equal(validateEffectiveEnvironment(contentEnvironment, { profile: "content-host" }), true);
   assert.throws(
@@ -546,4 +556,123 @@ test("Nginx leaves multipart overhead above the 30 MiB file limit", async () => 
   ]);
   assert.match(snippet, /client_max_body_size\s+32m;/);
   assert.match(generator, /client_max_body_size 32m;/);
+});
+
+test("managed domain migration adds four hosts without changing existing TLS or unrelated hosts", () => {
+  const old = `${MANAGED_HOST_MARKER}\n${certbotHostConfig().replace(/    location \/ \{[\s\S]*?    \}/, "    include /etc/nginx/snippets/html-workbench-admin-routes.conf;")}\nserver { listen 443 ssl; server_name other.example; return 404; }\n`;
+  const migrated = buildManagedHostConfig(old);
+  assert.ok(migrated.startsWith(old), "existing managed configuration stays byte-identical");
+  for (const host of ["desk.wekkii.cn", "ho.wekkii.cn", "ho.wekki.fun", "page.wekki.fun"]) {
+    assert.ok(migrated.includes(`server_name ${host};`), host);
+  }
+  assert.equal(buildManagedHostConfig(migrated), migrated);
+});
+
+test("admin routes delegate both UUID and short-code redirects and unsafe methods to the application", async () => {
+  const routes = await fs.readFile("deploy/self-host/nginx-admin-routes.conf", "utf8");
+  assert.doesNotMatch(routes, /return 30[1278]|location.*\/view/);
+  assert.match(routes, /proxy_pass http:\/\/127\.0\.0\.1:3000/);
+  assert.match(routes, /proxy_set_header Host \$host/);
+});
+
+test("deployment changes only the two admin origins and probes exact new hosts", async () => {
+  const before = `# Keep credentials and comments\r\n${validEnvironmentFile()}EXTRA='untouched # value'\n`;
+  const harness = await createHarness({ environmentFile: before });
+  try {
+    await deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, run: harness.run, log() {} });
+    assert.equal(await fs.readFile(harness.paths.envFile, "utf8"), before
+      .replace("https://ho.wekki.fun", "https://desk.wekkii.cn")
+      .replace("https://page.wekki.fun", "https://ho.wekkii.cn"));
+    const health = harness.commands.filter(({ command }) => command === "curl");
+    assert.ok(health.some(({ args }) => args.includes("Host: desk.wekkii.cn")));
+    assert.ok(health.some(({ args }) => args.includes("Host: ho.wekkii.cn")));
+    for (const host of ["desk.wekkii.cn", "ho.wekkii.cn"]) {
+      assert.ok(health.some(({ args }) => args.includes("--resolve") && args.includes(`${host}:443:127.0.0.1`)), "TLS also verifies this server, not only public DNS");
+    }
+  } finally { await harness.cleanup(); }
+});
+
+test("rollback probes the previous configured admin host, including already migrated installations", async () => {
+  const before = validEnvironmentFile().replace("https://ho.wekki.fun", "https://desk.wekkii.cn")
+    .replace("https://page.wekki.fun", "https://ho.wekkii.cn");
+  const harness = await createHarness({ environmentFile: before, postStartNginxFails: true });
+  try {
+    await assert.rejects(deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, run: harness.run, log() {} }), /invalid final nginx/);
+    assert.equal(await fs.readFile(harness.paths.envFile, "utf8"), before);
+    const start = harness.commands.findLastIndex(({ command, args }) => command === "systemctl" && args[0] === "start");
+    const health = harness.commands.slice(start + 1).filter(({ command }) => command === "curl");
+    assert.ok(health.some(({ args }) => args.includes("Host: desk.wekkii.cn")));
+    assert.ok(health.every(({ args }) => !args.includes("Host: ho.wekki.fun")));
+  } finally { await harness.cleanup(); }
+});
+
+test("origin migration preserves duplicate assignments, comments, CRLF and unrelated multiline values", () => {
+  const before = "# Origin comment\r\nHTML_WORKBENCH_ADMIN_ORIGIN = 'https://ho.wekki.fun' # manager\r\nHTML_WORKBENCH_PUBLIC_ORIGIN=\"https://page.wekki.fun\"  # files\r\nHTML_WORKBENCH_ADMIN_ORIGIN=https://ho.wekki.fun\r\nOTHER=one\\\r\nHTML_WORKBENCH_ADMIN_ORIGIN=literal-not-an-assignment\r\nSECRET='unmodified # secret'";
+  const after = migrateOriginEnvironment(before);
+  assert.equal(after, before.replaceAll("https://ho.wekki.fun", "https://desk.wekkii.cn")
+    .replaceAll("https://page.wekki.fun", "https://ho.wekkii.cn"));
+  assert.equal(migrateOriginEnvironment(after), after);
+  assert.throws(() => migrateOriginEnvironment(before.replace("'https://ho.wekki.fun'", "https://ho.\\\nwekki.fun")), /Multiline/);
+  assert.throws(() => migrateOriginEnvironment("OTHER=1\n"), /Missing/);
+});
+
+test("unready new-domain TLS aborts before any environment or active configuration mutation", async () => {
+  const harness = await createHarness({ tlsFails: true });
+  try {
+    const before = await fs.readFile(harness.paths.envFile, "utf8");
+    await assert.rejects(deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, run: harness.run, log() {} }), /certificate/);
+    assert.equal(await fs.readFile(harness.paths.envFile, "utf8"), before);
+    assert.equal(harness.commands.some(({ command }) => command === "chown" || command === "systemd-run"), false);
+    assert.equal(harness.commands.some(({ command, args }) => command === "systemctl" && args[0] === "stop"), false);
+    const tls = harness.commands.find(({ command, args }) => command === "curl" && args.includes("https://desk.wekkii.cn/"));
+    assert.ok(tls);
+    assert.ok(!tls.args.includes("--insecure"));
+  } finally { await harness.cleanup(); }
+});
+
+test("new-host redirect is not a successful readiness response and triggers rollback", async () => {
+  const harness = await createHarness({ redirectHealth: true });
+  try {
+    await assert.rejects(deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, run: harness.run, log() {} }), /readiness/);
+    assert.equal(path.resolve(await fs.readlink(harness.paths.currentLink)), path.resolve(harness.previousRelease));
+  } finally { await harness.cleanup(); }
+});
+
+test("deployment entrypoint imports from the workflow's standalone self-host archive", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "deploy-archive-"));
+  try {
+    await fs.cp("deploy/self-host", path.join(root, "deploy/self-host"), { recursive: true });
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", "await import('./deploy/self-host/deploy.mjs')"], { cwd: root, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("managed migration ignores commented server blocks and preserves TLS on all four hosts", () => {
+  const base = buildManagedHostConfig(`${MANAGED_HOST_MARKER}\n${certbotHostConfig()}# server { server_name desk.wekkii.cn; }\n`);
+  assert.match(base, /\nserver \{\n    listen 80;\n    server_name desk\.wekkii\.cn;/);
+  const tls = base.replaceAll("listen 80;", "listen 443 ssl;\n    ssl_certificate /existing/fullchain.pem;\n    ssl_certificate_key /existing/privkey.pem;");
+  assert.equal(buildManagedHostConfig(tls), tls);
+});
+
+test("failed activation removes newly created host config and restores both environment files", async () => {
+  const harness = await createHarness({ hostExists: false, postStartNginxFails: true });
+  try {
+    const before = new Map();
+    for (const file of [harness.paths.envFile, harness.paths.contentEnvFile, harness.paths.adminSnippet, harness.paths.contentSnippet]) {
+      before.set(file, await fs.readFile(file));
+    }
+    await assert.rejects(deployRelease({ deploySha: DEPLOY_SHA, paths: harness.paths, run: harness.run, log() {} }), /invalid final nginx/);
+    assert.equal(await exists(harness.paths.nginxHost), false);
+    for (const [file, bytes] of before) assert.deepEqual(await fs.readFile(file), bytes);
+  } finally { await harness.cleanup(); }
+});
+
+test("new Certbot TLS blocks are adopted into existing managed config without losing certificate directives", () => {
+  const old = buildManagedHostConfig(certbotHostConfig());
+  const provisioned = old.replace(/server \{\n    listen 80;\n    server_name desk.wekkii.cn;[\s\S]*?\n\}/,
+    "server {\n    listen 443 ssl;\n    server_name desk.wekkii.cn;\n    ssl_certificate /new/fullchain.pem;\n    ssl_certificate_key /new/privkey.pem;\n    location / { proxy_pass http://127.0.0.1:3000; }\n}");
+  const migrated = buildManagedHostConfig(provisioned);
+  assert.match(migrated, /ssl_certificate \/new\/fullchain.pem;[\s\S]*?include \/etc\/nginx\/snippets\/html-workbench-admin-routes.conf;/);
+  assert.match(migrated, /ssl_certificate_key \/new\/privkey.pem;/);
+  assert.equal(buildManagedHostConfig(migrated), migrated);
 });

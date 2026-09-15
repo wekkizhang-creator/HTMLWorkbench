@@ -11,14 +11,6 @@ const PROXY_HEADERS = `        proxy_http_version 1.1;
 export const ADMIN_ROUTES = `# Managed by HTMLWorkbench deploy; local edits are overwritten.
 client_max_body_size 32m;
 
-location = /view {
-    return 307 https://page.wekki.fun$request_uri;
-}
-
-location ^~ /view/ {
-    return 307 https://page.wekki.fun$request_uri;
-}
-
 location / {
     proxy_pass http://127.0.0.1:3000;
 ${PROXY_HEADERS}
@@ -48,36 +40,55 @@ ${PROXY_HEADERS}
 location / { return 404; }
 `;
 
-function bootstrapPageServer() {
+const HOST_SNIPPETS = new Map([
+  ["ho.wekki.fun", ADMIN_SNIPPET_PATH],
+  ["page.wekki.fun", CONTENT_SNIPPET_PATH],
+  ["desk.wekkii.cn", ADMIN_SNIPPET_PATH],
+  ["ho.wekkii.cn", CONTENT_SNIPPET_PATH]
+]);
+
+function bootstrapServer(host, snippet) {
   return `server {
     listen 80;
-    server_name page.wekki.fun;
-    include ${CONTENT_SNIPPET_PATH};
+    server_name ${host};
+    include ${snippet};
 }`;
 }
 
 export function bootstrapHostConfig() {
-  return `${MANAGED_HOST_MARKER}
-server {
-    listen 80;
-    server_name ho.wekki.fun;
-    include ${ADMIN_SNIPPET_PATH};
+  return `${MANAGED_HOST_MARKER}\n${[...HOST_SNIPPETS].map(([host, snippet]) => bootstrapServer(host, snippet)).join("\n\n")}\n`;
 }
 
-${bootstrapPageServer()}
-`;
+function structuralText(contents) {
+  let quote = null;
+  let comment = false;
+  let escaped = false;
+  return contents.split("").map((character) => {
+    if (character === "\n") { comment = false; return character; }
+    if (comment) return " ";
+    if (escaped) { escaped = false; return " "; }
+    if (character === "\\") { escaped = true; return " "; }
+    if (quote) {
+      if (character === quote) quote = null;
+      return " ";
+    }
+    if (character === '"' || character === "'") { quote = character; return " "; }
+    if (character === "#") { comment = true; return " "; }
+    return character;
+  }).join("");
 }
 
 function serverBlocks(contents) {
   const blocks = [];
+  const structural = structuralText(contents);
   const matcher = /\bserver\s*\{/g;
   let match;
-  while ((match = matcher.exec(contents))) {
+  while ((match = matcher.exec(structural))) {
     let depth = 0;
     let end = -1;
     for (let index = match.index; index < contents.length; index += 1) {
-      if (contents[index] === "{") depth += 1;
-      if (contents[index] === "}") {
+      if (structural[index] === "{") depth += 1;
+      if (structural[index] === "}") {
         depth -= 1;
         if (depth === 0) { end = index + 1; break; }
       }
@@ -115,7 +126,7 @@ function withInclude(block, includePath) {
   return `${withoutLocations.slice(0, closing).trimEnd()}\n    include ${includePath};\n${withoutLocations.slice(closing)}`;
 }
 
-function replaceSelectedBlocks(contents, host, includePath) {
+function replaceSelectedBlocks(contents, host, includePath, preserveManaged = false) {
   const matching = serverBlocks(contents).filter(({ source }) => new RegExp(`\\bserver_name\\s+[^;]*\\b${host.replace(/\./g, "\\.")}\\b[^;]*;`).test(source));
   if (matching.length === 0) return { contents, found: false };
   const tls = matching.filter(({ source }) => /\blisten\s+[^;]*443\b|\bssl_certificate\b/.test(source));
@@ -124,7 +135,8 @@ function replaceSelectedBlocks(contents, host, includePath) {
   let cursor = 0;
   for (const block of serverBlocks(contents)) {
     result += contents.slice(cursor, block.start);
-    result += selected.has(block.start) ? withInclude(block.source, includePath) : block.source;
+    const alreadyManaged = preserveManaged && block.source.includes(`include ${includePath};`);
+    result += selected.has(block.start) && !alreadyManaged ? withInclude(block.source, includePath) : block.source;
     cursor = block.end;
   }
   result += contents.slice(cursor);
@@ -133,11 +145,19 @@ function replaceSelectedBlocks(contents, host, includePath) {
 
 export function buildManagedHostConfig(existingContents) {
   if (existingContents == null) return bootstrapHostConfig();
-  if (existingContents.includes(MANAGED_HOST_MARKER)) return existingContents;
-
-  const admin = replaceSelectedBlocks(existingContents, "ho.wekki.fun", ADMIN_SNIPPET_PATH);
-  if (!admin.found) throw new Error("Existing Nginx host file does not contain ho.wekki.fun; refusing to replace it");
-  const content = replaceSelectedBlocks(admin.contents, "page.wekki.fun", CONTENT_SNIPPET_PATH);
-  const adopted = content.found ? content.contents : `${admin.contents.trimEnd()}\n\n${bootstrapPageServer()}\n`;
-  return `${MANAGED_HOST_MARKER}\n${adopted}`;
+  const managed = existingContents.includes(MANAGED_HOST_MARKER);
+  let result = existingContents;
+  for (const [host, snippet] of HOST_SNIPPETS) {
+    const matching = serverBlocks(result).filter(({ source }) =>
+      structuralText(source).match(/\bserver_name\s+([^;]+);/)?.[1].trim().split(/\s+/).includes(host));
+    if (!matching.length) {
+      if (!managed && host === "ho.wekki.fun") {
+        throw new Error("Existing Nginx host file does not contain ho.wekki.fun; refusing to replace it");
+      }
+      result += `\n${bootstrapServer(host, snippet)}\n`;
+    } else if (!managed || host.endsWith(".wekkii.cn")) {
+      result = replaceSelectedBlocks(result, host, snippet, managed).contents;
+    }
+  }
+  return managed ? result : `${MANAGED_HOST_MARKER}\n${result}`;
 }

@@ -63,8 +63,8 @@ function containerEnvironment(overrides = {}) {
     ...process.env,
     NODE_ENV: "production",
     HTML_WORKBENCH_DATA_DIR: "/data",
-    HTML_WORKBENCH_ADMIN_ORIGIN: "https://ho.wekki.fun",
-    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://page.wekki.fun",
+    HTML_WORKBENCH_ADMIN_ORIGIN: "https://desk.wekkii.cn",
+    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://ho.wekkii.cn",
     HTML_WORKBENCH_PASSWORD: "885688",
     HTML_WORKBENCH_AUTH_SECRET: "oJPyDUkzBK7U78fZp1yJhMUJ8iL8dGeK6cX4HnJrT40",
     HTML_WORKBENCH_DOWNLOAD_PASSWORD: "885688",
@@ -171,10 +171,16 @@ test("Compose uses role-specific healthchecks and keeps management credentials o
   const admin = services.get("admin")?.source || "";
   const content = services.get("content")?.source || "";
 
-  assert.match(admin, /HEALTHCHECK_HOST:\s*ho\.wekki\.fun/);
+  assert.match(admin, /HEALTHCHECK_HOST:\s*desk\.wekkii\.cn/);
   assert.match(admin, /\/healthz.*3000/);
-  assert.match(content, /HEALTHCHECK_HOST:\s*page\.wekki\.fun/);
+  assert.match(content, /HEALTHCHECK_HOST:\s*ho\.wekkii\.cn/);
   assert.match(content, /\/healthz.*3001/);
+  for (const service of [migration, admin, content]) {
+    assert.match(service, /HTML_WORKBENCH_ADMIN_ORIGIN:\s*https:\/\/desk\.wekkii\.cn/);
+    assert.match(service, /HTML_WORKBENCH_PUBLIC_ORIGIN:\s*https:\/\/ho\.wekkii\.cn/);
+  }
+  assert.match(admin, /headers:\{Host:'desk\.wekkii\.cn'\}/);
+  assert.match(content, /headers:\{Host:'ho\.wekkii\.cn'\}/);
   for (const name of [
     "HTML_WORKBENCH_PASSWORD",
     "HTML_WORKBENCH_AUTH_SECRET",
