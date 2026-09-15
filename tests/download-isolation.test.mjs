@@ -110,3 +110,18 @@ test("production auth cookies are host-only, secure, strict, and http-only", asy
   assert.match(cookie, /SameSite=Strict/);
   assert.doesNotMatch(cookie, /Domain=/);
 });
+
+test("migrated download widget admits only the two exact public ancestors", async () => {
+  await withEnv({
+    HTML_WORKBENCH_ADMIN_ORIGIN: "https://desk.wekkii.cn",
+    HTML_WORKBENCH_PUBLIC_ORIGIN: "https://ho.wekkii.cn",
+    HTML_WORKBENCH_LEGACY_PUBLIC_ORIGIN: "https://page.wekki.fun"
+  }, async () => {
+    const { GET } = await importFresh("../api/download-widget.mjs");
+    const response = await GET(new Request(`https://desk.wekkii.cn/public-download-widget/${TEST_RECORD_ID}`));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-security-policy"), "frame-ancestors https://ho.wekkii.cn https://page.wekki.fun");
+    assert.match(await response.text(), /https:\/\/desk\.wekkii\.cn\/api\/download/);
+    assert.equal((await GET(new Request(`https://ho.wekkii.cn/public-download-widget/${TEST_RECORD_ID}`))).status, 404);
+  });
+});

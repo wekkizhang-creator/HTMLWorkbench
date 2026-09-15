@@ -1,7 +1,7 @@
 import { error } from "../lib/http.mjs";
-import { assertRecordId } from "../lib/records.mjs";
-import { getRuntimeConfig } from "../lib/runtime.mjs";
-import { getRecord, getSiteFileContent, getUploadContent } from "../lib/storage.mjs";
+import { isPublicToken, publicViewPath } from "../lib/public-links.mjs";
+import { getRuntimeConfig, isPublicHost } from "../lib/runtime.mjs";
+import { getRecordByPublicToken, getSiteFileContent, getUploadContent } from "../lib/storage.mjs";
 
 export async function GET(request) {
   try {
@@ -9,18 +9,19 @@ export async function GET(request) {
     const config = getRuntimeConfig();
     const requestHost = requestUrl.host.toLowerCase();
     const adminHost = new URL(config.adminOrigin).host.toLowerCase();
-    const publicHost = new URL(config.publicOrigin).host.toLowerCase();
     const id = requestUrl.searchParams.get("id");
+    const assetPath = requestUrl.searchParams.get("path") || "";
+    if (!isPublicToken(id)) return error("HTML page does not exist", 404);
     if (requestHost === adminHost) {
+      const destination = new URL(id.length === 36 ? config.legacyPublicOrigin : config.publicOrigin);
+      destination.pathname = `/view/${id}${assetPath ? `/${assetPath}` : ""}`;
       return Response.redirect(
-        new URL(`/view/${encodeURIComponent(id || "")}`, config.publicOrigin),
+        destination,
         307
       );
     }
-    if (requestHost !== publicHost) return error("HTML page does not exist", 404);
-    const assetPath = requestUrl.searchParams.get("path") || "";
-    assertRecordId(id);
-    const record = await getRecord(id);
+    if (!isPublicHost(requestHost)) return error("HTML page does not exist", 404);
+    const record = await getRecordByPublicToken(id);
     if (!record) return error("HTML page does not exist", 404);
 
     if (assetPath) {
@@ -64,7 +65,7 @@ function htmlResponse(body) {
 
 function injectPackageBase(html, record) {
   if (/<base\s/i.test(html)) return html;
-  const baseTag = `<base href="/view/${record.id}/">`;
+  const baseTag = `<base href="${publicViewPath(record, "zip")}">`;
   const head = html.match(/<head[^>]*>/i);
   if (!head || head.index === undefined) return `${baseTag}${html}`;
   const insertAt = head.index + head[0].length;

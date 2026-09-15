@@ -428,6 +428,22 @@ async function route(req, res) {
     return;
   }
 
+  const viewMatch = pathname.match(runtime.PUBLIC_VIEW_RE);
+  const legacyAdminRequest = config.role === "admin" && url.host.toLowerCase() !== new URL(config.adminOrigin).host.toLowerCase();
+  // Native roles also support a single-origin development server; only redirects need the shared host policy.
+  const hostDecision = config.role === "admin" && (legacyAdminRequest || viewMatch)
+    ? runtime.getVercelHostDecision(url, req.method)
+    : { action: "next" };
+  if (hostDecision.action === "redirect") {
+    res.writeHead(307, { "Cache-Control": "no-store", Location: hostDecision.location });
+    res.end();
+    return;
+  }
+  if (hostDecision.action !== "next") {
+    sendError(res, 404, "Page does not exist");
+    return;
+  }
+
   if (pathname === "/healthz") {
     await callApiModule("health", req, res, url);
     return;
@@ -488,16 +504,7 @@ async function route(req, res) {
     return;
   }
 
-  const viewMatch = pathname.match(/^\/view\/([0-9a-f-]{36})(?:\/(.*))?$/i);
   if (viewMatch) {
-    if (config.role === "admin") {
-      res.writeHead(307, {
-        "Cache-Control": "no-store",
-        Location: new URL(`${pathname}${url.search}`, config.publicOrigin).href
-      });
-      res.end();
-      return;
-    }
     url.pathname = "/api/view";
     url.searchParams.set("id", viewMatch[1]);
     if (viewMatch[2]) {

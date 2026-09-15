@@ -19,8 +19,8 @@ npm run dev
 3. 在 Production 和 Preview 环境显式配置下列全部变量：
 
 ```text
-HTML_WORKBENCH_ADMIN_ORIGIN=https://ho.wekki.fun
-HTML_WORKBENCH_PUBLIC_ORIGIN=https://page.wekki.fun
+HTML_WORKBENCH_ADMIN_ORIGIN=https://desk.wekkii.cn
+HTML_WORKBENCH_PUBLIC_ORIGIN=https://ho.wekkii.cn
 HTML_WORKBENCH_PASSWORD=885688
 HTML_WORKBENCH_AUTH_SECRET=<independent high-entropy random secret, at least 32 bytes>
 HTML_WORKBENCH_DOWNLOAD_PASSWORD=885688
@@ -56,6 +56,14 @@ npm run check
 
 “保存并发布”直接更新原公开链接，同时保留保存前的单个历史版本供列表回滚。源文件被其他操作修改时，保存会提示冲突，不覆盖新版本。未保存的修改在离开页面前会提示。
 
+### 文件链接与域名
+
+管理端使用 `https://desk.wekkii.cn`。只有新上传的 HTML/ZIP 文件获得 `https://ho.wekkii.cn/view/<10 位短码>`，ZIP 地址以 `/` 结尾。短码区分大小写，内部存储、编辑和管理 API 继续使用 UUID。短码与文件身份绑定，编辑、替换和回滚不会重新分配；删除后也不复用，原地址返回 404。
+
+已有文件继续使用 `https://page.wekki.fun/view/<原 UUID>`，不批量转换、不改写原文件。旧管理端 `https://ho.wekki.fun` 的 GET/HEAD 导航跳转到新管理端，旧域名的写请求拒绝执行。切换后需要在新管理域名重新登录。两个公开域名均不能访问管理接口。
+
+兼容地址在生产环境固定为 `HTML_WORKBENCH_LEGACY_ADMIN_ORIGIN=https://ho.wekki.fun` 和 `HTML_WORKBENCH_LEGACY_PUBLIC_ORIGIN=https://page.wekki.fun`（未配置时使用这两个默认值）。本地开发可显式设置兼容地址，不设置则跟随本地管理/公开地址。
+
 编辑画布暂停页面脚本，但发布源码保留脚本。脚本驱动的内容在画布中可能与公开页不同；声明式 Shadow DOM 模板保留为不透明内容，不在画布中展开编辑。编辑接口和页面仅由管理服务提供。
 
 可选浏览器验收需要本机 Chrome 及 Playwright。PowerShell 示例：
@@ -84,16 +92,17 @@ Production uses two Node processes from the same immutable release:
 
 ### DNS
 
-Create this exact DNS record before requesting the public certificate:
+Create these A records before requesting the new certificates; keep the existing legacy DNS records:
 
 ```text
-Host record: page
+Zone: wekkii.cn
+Host records: desk, ho
 Type: A
 Value: 163.7.4.158
 TTL: 600
 ```
 
-`page.wekki.fun` must resolve to `163.7.4.158`.
+Both `desk.wekkii.cn` and `ho.wekkii.cn` must resolve to `163.7.4.158`. Keep `ho.wekki.fun` and `page.wekki.fun` pointed at the same host for compatibility.
 
 ### Environment
 
@@ -101,8 +110,8 @@ Create `/etc/html-workbench.env` with mode `0640`, owner `root`, and group `html
 
 ```text
 HTML_WORKBENCH_DATA_DIR=/var/lib/html-workbench
-HTML_WORKBENCH_ADMIN_ORIGIN=https://ho.wekki.fun
-HTML_WORKBENCH_PUBLIC_ORIGIN=https://page.wekki.fun
+HTML_WORKBENCH_ADMIN_ORIGIN=https://desk.wekkii.cn
+HTML_WORKBENCH_PUBLIC_ORIGIN=https://ho.wekkii.cn
 HTML_WORKBENCH_PASSWORD=<admin password>
 HTML_WORKBENCH_AUTH_SECRET=<random authentication secret>
 HTML_WORKBENCH_DOWNLOAD_PASSWORD=<separate download password>
@@ -121,19 +130,19 @@ Deployment owns only these files:
 /etc/nginx/snippets/html-workbench-content-routes.conf
 ```
 
-It never reads or writes unrelated `oc`, `material`, or other host files. If the host file is missing, deployment creates a marked HTTP bootstrap host for `ho.wekki.fun` and `page.wekki.fun`. If an unmarked `ho.wekki.fun` host already exists, deployment adopts its relevant server blocks once, preserving Certbot TLS directives while replacing only HTMLWorkbench locations with stable snippet includes. After the marker is present, later deploys leave the host file byte-for-byte unchanged and update only the two snippets. Candidate files are installed atomically, checked with `nginx -t`, and restored if validation or later activation fails.
+It never reads or writes unrelated `oc`, `material`, or other host files. Managed configuration includes `desk.wekkii.cn`, `ho.wekkii.cn`, `ho.wekki.fun` and `page.wekki.fun`. Migration adds missing host blocks and adopts relevant locations into stable snippet includes while preserving Certbot TLS directives and unrelated blocks. Repeated migration is idempotent. Candidate files are installed atomically, checked with `nginx -t`, and restored if validation or later activation fails. The deployment updates only the two primary origin assignments in an existing admin environment; credentials and unrelated settings remain intact.
 
-Admin requests proxy to port 3000 with a 30 MB body limit. Legacy `/view` and `/view/...` requests receive a 307 redirect to the same request URI on `https://page.wekki.fun`. The page host proxies only `/view/` and `/healthz` to port 3001; `/api/`, management static files, login paths, and every other route return 404. Both proxies preserve `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`.
+Admin hosts proxy to port 3000 with a 32 MiB transport limit (30 MiB file limit). The application redirects safe legacy-manager navigation to the new manager; UUID `/view/...` paths redirect to the legacy public origin and short-code paths to the new public origin. Unsafe legacy-manager methods return 404. Both content hosts proxy only `/view/` and `/healthz` to port 3001; `/api/`, management static files, login paths, and every other route return 404. Both proxies preserve `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto`.
 
-After DNS and the first HTTP bootstrap deploy, request the public certificate with Certbot 2.9.0:
+Before switching the application, provision HTTP virtual hosts for the two new names alongside the existing hosts, then request certificates with the installed Certbot. Do not overwrite the existing TLS configuration with the example bootstrap file:
 
 ```bash
-sudo certbot --nginx -d page.wekki.fun
+sudo certbot --nginx -d desk.wekkii.cn -d ho.wekkii.cn
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-Certbot's edits remain in the stable marked host file and are preserved by future deployments.
+Keep these new virtual hosts in the existing managed host file. Certbot's TLS edits are preserved by future deployments. Deployment checks both publicly resolved HTTPS endpoints and local SNI before changing environments or restarting services; a DNS/TLS failure leaves the active application unchanged.
 
 ### Immutable live deployment
 
@@ -214,8 +223,8 @@ Code and configuration rollback cannot reverse records already changed by a succ
 ```bash
 sudo systemctl status html-workbench html-workbench-content --no-pager
 readlink -f /opt/html-workbench/current
-curl -fsS -H 'Host: ho.wekki.fun' http://127.0.0.1:3000/healthz
-curl -fsS -H 'Host: page.wekki.fun' http://127.0.0.1:3001/healthz
+curl -fsS -H 'Host: desk.wekkii.cn' http://127.0.0.1:3000/healthz
+curl -fsS -H 'Host: ho.wekkii.cn' http://127.0.0.1:3001/healthz
 sudo nginx -t
 ```
 
@@ -261,14 +270,14 @@ SERVER_HOST_KEY=163.7.4.158 ssh-ed25519 <server public host key>
 The production origins are fixed:
 
 ```text
-HTML_WORKBENCH_ADMIN_ORIGIN=https://ho.wekki.fun
-HTML_WORKBENCH_PUBLIC_ORIGIN=https://page.wekki.fun
+HTML_WORKBENCH_ADMIN_ORIGIN=https://desk.wekkii.cn
+HTML_WORKBENCH_PUBLIC_ORIGIN=https://ho.wekkii.cn
 ```
 
 For a single Vercel project, root `middleware.js` applies the Host policy before
-filesystem and API routing. `page.wekki.fun` exposes only `/healthz` and
-`/view/<id>`; login, management static files, and management APIs return 404.
-Legacy `/view/<id>` requests on `ho.wekki.fun` redirect to the public origin.
+filesystem and API routing. Both `ho.wekkii.cn` and `page.wekki.fun` expose only `/healthz` and
+`/view/<code-or-uuid>`; login, management static files, and management APIs return 404.
+Attach all four hostnames to the project. Safe navigation on `ho.wekki.fun` redirects to `desk.wekkii.cn`, except UUID view paths which keep the legacy public origin. Public short paths use the new public origin. Legacy-manager writes are rejected.
 
 Authenticated admin writes require both the exact admin `Origin` and an
 `X-CSRF-Token` bound to the current management session. The management frontend
@@ -285,8 +294,8 @@ Self-hosted content runs with `/etc/html-workbench-content.env`:
 
 ```text
 HTML_WORKBENCH_DATA_DIR=/var/lib/html-workbench
-HTML_WORKBENCH_ADMIN_ORIGIN=https://ho.wekki.fun
-HTML_WORKBENCH_PUBLIC_ORIGIN=https://page.wekki.fun
+HTML_WORKBENCH_ADMIN_ORIGIN=https://desk.wekkii.cn
+HTML_WORKBENCH_PUBLIC_ORIGIN=https://ho.wekkii.cn
 ```
 
 Deployment owns this non-secret file and validates it with the `content-host`

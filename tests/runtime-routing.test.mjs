@@ -36,9 +36,9 @@ async function reservePort() {
   return port;
 }
 
-function request(origin, pathname, host) {
+function request(origin, pathname, host, method = "GET") {
   return new Promise((resolve, reject) => {
-    const req = http.request(`${origin}${pathname}`, { headers: { Host: host } }, (res) => {
+    const req = http.request(`${origin}${pathname}`, { method, headers: { Host: host } }, (res) => {
       const chunks = [];
       res.on("data", (chunk) => chunks.push(chunk));
       res.on("end", () => resolve({ body: Buffer.concat(chunks), headers: res.headers, status: res.statusCode }));
@@ -123,7 +123,9 @@ test("runtime configuration recognizes role hosts and role routes", async () => 
       host: "127.0.0.1",
       port: 3001,
       adminOrigin: "https://ho.wekki.fun",
-      publicOrigin: "https://page.wekki.fun"
+      publicOrigin: "https://page.wekki.fun",
+      legacyAdminOrigin: "https://ho.wekki.fun",
+      legacyPublicOrigin: "https://page.wekki.fun"
     });
     assert.equal(isAllowedHost("page.wekki.fun", "content"), true);
     assert.equal(isAllowedHost("ho.wekki.fun", "content"), false);
@@ -211,4 +213,81 @@ test("Vercel routes editor source requests before generic upload records", async
   assert.ok(editorRoute >= 0);
   assert.ok(editorRoute < recordRoute);
   assert.equal(config.rewrites[editorRoute].destination, "/api/edit-upload?id=:id");
+});
+
+const migratedOrigins = {
+  HTML_WORKBENCH_ADMIN_ORIGIN: "https://desk.wekkii.cn",
+  HTML_WORKBENCH_PUBLIC_ORIGIN: "https://ho.wekkii.cn",
+  HTML_WORKBENCH_LEGACY_ADMIN_ORIGIN: "https://ho.wekki.fun",
+  HTML_WORKBENCH_LEGACY_PUBLIC_ORIGIN: "https://page.wekki.fun"
+};
+
+test("new primary origins do not move legacy relative links or persisted new links", async () => {
+  await withEnv(migratedOrigins, async () => {
+    const { buildPublicViewUrl } = await importFresh("../lib/runtime.mjs");
+    assert.equal(buildPublicViewUrl({ id: TEST_RECORD_ID, url: `/view/${TEST_RECORD_ID}` }), `https://page.wekki.fun/view/${TEST_RECORD_ID}`);
+    assert.equal(buildPublicViewUrl({ id: TEST_RECORD_ID }), `https://page.wekki.fun/view/${TEST_RECORD_ID}`);
+    assert.equal(buildPublicViewUrl({ id: TEST_RECORD_ID, publicCode: "a7Kp9mX2qB", publicOrigin: "https://ho.wekkii.cn", url: "https://ho.wekkii.cn/view/a7Kp9mX2qB" }), "https://ho.wekkii.cn/view/a7Kp9mX2qB");
+  });
+});
+
+test("both public hosts remain content-only and short paths are accepted", async () => {
+  await withEnv(migratedOrigins, async () => {
+    const runtime = await importFresh("../lib/runtime.mjs");
+    for (const host of ["ho.wekkii.cn", "page.wekki.fun"]) {
+      assert.equal(runtime.isAllowedHost(host, "content"), true);
+      assert.equal(runtime.isPublicHost(host), true);
+      for (const pathname of ["/healthz", `/view/${TEST_RECORD_ID}`, "/view/a7Kp9mX2qB", "/view/a7Kp9mX2qB/assets/a.js"]) {
+        assert.deepEqual(runtime.getVercelHostDecision(`https://${host}${pathname}`), { action: "next" });
+      }
+      for (const pathname of ["/api/auth", "/api/uploads", "/editor.html", "/login.html", "/view/short", "/public-download-widget/x"]) {
+        assert.deepEqual(runtime.getVercelHostDecision(`https://${host}${pathname}`), { action: "not-found" });
+      }
+    }
+    for (const host of ["desk.wekkii.cn", "ho.wekki.fun", "attacker.example"]) assert.equal(runtime.isAllowedHost(host, "content"), false);
+    assert.deepEqual(runtime.getVercelHostDecision("https://attacker.example/view/a7Kp9mX2qB"), { action: "misdirected" });
+  });
+});
+
+test("legacy manager redirects safe navigation only and cannot redirect to an injected host", async () => {
+  await withEnv(migratedOrigins, async () => {
+    const { getVercelHostDecision } = await importFresh("../lib/runtime.mjs");
+    for (const method of ["GET", "HEAD"]) {
+      assert.deepEqual(getVercelHostDecision("https://ho.wekki.fun/editor.html?id=keep", method), { action: "redirect", location: "https://desk.wekkii.cn/editor.html?id=keep" });
+      assert.deepEqual(getVercelHostDecision("https://ho.wekki.fun//attacker.example/api/auth?q=1", method), { action: "redirect", location: "https://desk.wekkii.cn//attacker.example/api/auth?q=1" });
+      assert.deepEqual(getVercelHostDecision(`https://ho.wekki.fun/view/${TEST_RECORD_ID}/a.js?v=2`, method), { action: "redirect", location: `https://page.wekki.fun/view/${TEST_RECORD_ID}/a.js?v=2` });
+      assert.deepEqual(getVercelHostDecision("https://desk.wekkii.cn/view/a7Kp9mX2qB?q=1", method), { action: "redirect", location: "https://ho.wekkii.cn/view/a7Kp9mX2qB?q=1" });
+    }
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      assert.deepEqual(getVercelHostDecision("https://ho.wekki.fun/api/auth", method), { action: "not-found" });
+      assert.deepEqual(getVercelHostDecision("https://ho.wekki.fun/editor.html", method), { action: "not-found" });
+    }
+  });
+});
+
+test("native servers accept legacy content and reject unsafe legacy management requests", async () => {
+  const content = await startServer({ ...migratedOrigins, HTML_WORKBENCH_ROLE: "content" });
+  try {
+    for (const host of ["ho.wekkii.cn", "page.wekki.fun"]) {
+      assert.equal((await request(content.origin, `/view/${TEST_RECORD_ID}`, host)).status, 200);
+      assert.equal((await request(content.origin, "/api/uploads", host)).status, 404);
+    }
+  } finally { await content.close(); }
+  const admin = await startServer({ ...migratedOrigins, HTML_WORKBENCH_ROLE: "admin" });
+  try {
+    const old = await request(admin.origin, "/editor.html?id=keep", "ho.wekki.fun");
+    assert.equal(old.status, 307);
+    assert.equal(old.headers.location, "https://desk.wekkii.cn/editor.html?id=keep");
+    assert.equal((await request(admin.origin, "/api/auth", "ho.wekki.fun", "POST")).status, 404);
+    assert.equal((await request(admin.origin, "/api/auth", "ho.wekkii.cn")).status, 421);
+  } finally { await admin.close(); }
+});
+
+test("production origin validation pins new primary and old compatibility domains", async () => {
+  const security = await importFresh("../lib/security-config.mjs");
+  assert.equal(security.PRODUCTION_ADMIN_ORIGIN, migratedOrigins.HTML_WORKBENCH_ADMIN_ORIGIN);
+  assert.equal(security.PRODUCTION_PUBLIC_ORIGIN, migratedOrigins.HTML_WORKBENCH_PUBLIC_ORIGIN);
+  assert.equal(security.validateProductionOrigins(migratedOrigins), true);
+  assert.throws(() => security.validateProductionOrigins({ ...migratedOrigins, HTML_WORKBENCH_LEGACY_PUBLIC_ORIGIN: "https://attacker.example" }), /LEGACY_PUBLIC_ORIGIN/);
+  assert.throws(() => security.validateProductionOrigins({ ...migratedOrigins, HTML_WORKBENCH_LEGACY_ADMIN_ORIGIN: "https://attacker.example" }), /LEGACY_ADMIN_ORIGIN/);
 });

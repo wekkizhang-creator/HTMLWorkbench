@@ -28,8 +28,8 @@ Interfaces supplied to the coordinator:
 export const PUBLIC_VIEW_RE = /^\/view\/([0-9a-fA-F-]{36}|[A-Za-z0-9]{10})(?:\/(.*))?$/;
 export function isPublicToken(value) {} // UUID-shaped or 10-character alphanumeric
 export function publicViewPath(record, kind = record.uploadKind) {} // /view/code-or-id, ZIP slash
-export function generatePublicCode() {} // node:crypto randomInt, 10 chars
 // lib/storage.mjs
+export function generatePublicCode() {} // node:crypto randomInt, 10 chars; keep formatter edge-compatible
 export async function assignPublicLink(record, { generateCode = generatePublicCode } = {}) {} // locked, returns new record
 export async function getRecordByPublicToken(token) {} // read-only, null on missing/deleted/malformed
 ```

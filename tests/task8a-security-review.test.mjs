@@ -5,8 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
-const ADMIN_ORIGIN = "https://ho.wekki.fun";
-const PUBLIC_ORIGIN = "https://page.wekki.fun";
+const ADMIN_ORIGIN = "https://desk.wekkii.cn";
+const PUBLIC_ORIGIN = "https://ho.wekkii.cn";
 const STRONG_AUTH_SECRET = "oJPyDUkzBK7U78fZp1yJhMUJ8iL8dGeK6cX4HnJrT40";
 
 function importFresh(relativePath) {

@@ -10,12 +10,13 @@ export async function GET(request) {
     const id = requestUrl.searchParams.get("id") || requestUrl.pathname.split("/").filter(Boolean).pop();
     assertRecordId(id);
 
-    const { adminOrigin, publicOrigin } = getRuntimeConfig();
+    const { adminOrigin, publicOrigin, legacyPublicOrigin } = getRuntimeConfig();
+    const ancestors = [...new Set([publicOrigin, legacyPublicOrigin])].join(" ");
     return new Response(buildWidgetHtml(id, adminOrigin), {
       status: 200,
       headers: {
         "Cache-Control": "no-store",
-        "Content-Security-Policy": `frame-ancestors ${publicOrigin}`,
+        "Content-Security-Policy": `frame-ancestors ${ancestors}`,
         "Content-Type": "text/html; charset=utf-8",
         "X-Content-Type-Options": "nosniff"
       }
