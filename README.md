@@ -142,7 +142,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-Keep these new virtual hosts in the existing managed host file. Certbot's TLS edits are preserved by future deployments. Deployment checks both publicly resolved HTTPS endpoints and local SNI before changing environments or restarting services; a DNS/TLS failure leaves the active application unchanged.
+Keep these new virtual hosts in the existing managed host file, with separate server blocks for management and content domains (a certificate may cover both). Certbot's TLS edits are preserved by future deployments. Deployment checks both publicly resolved HTTPS endpoints and local SNI before changing environments or restarting services; a DNS/TLS failure leaves the active application unchanged.
 
 ### Immutable live deployment
 
