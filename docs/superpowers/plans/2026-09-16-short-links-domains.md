@@ -65,13 +65,19 @@ Own `deploy/self-host/*`, `deploy/docker/*` and deployment examples if present, 
 
 Local implementation and independent reviews are complete through `402043e`.
 Final check: 256 passed, 6 opt-in entries skipped, zero failures; explicit browser
-acceptance: 82 passed; dependency audit: zero vulnerabilities. DNS recheck on
-2026-09-16: `desk.wekkii.cn` resolves to `163.7.4.158`, while `ho.wekkii.cn`
-returns NXDOMAIN. Production activation and four-host HTTPS acceptance remain
-pending; the existing production release has not been changed.
+acceptance: 82 passed; dependency audit: zero vulnerabilities. On 2026-09-16,
+both new domains resolved to `163.7.4.158`; their HTTPS certificate was issued
+and release `5b92512f7fe3c37ae0e9d944d4f6affa94a008df` was activated.
+Both services are active. Production browser acceptance passed upload, short
+links, slide/notes editing, draft recovery, export, desktop/mobile pan/zoom,
+save/public playback, rollback and deletion. All 38 legacy public links returned
+200; all 87 preexisting record/source files remained byte-identical. Four-host
+HTTPS, legacy management redirect and public management isolation passed.
+The temporary browser-test upload was deleted. The data/config backup is
+`/var/backups/html-workbench/domains-5b92512f7fe3c37ae0e9d944d4f6affa94a008df`.
 
 - [x] Independent task reviews for storage and deployment; fix material issues, then broad final review.
 - [x] `npm.cmd run check`; opt-in editor and domain/link browser acceptance; `git diff --check`; audit current lockfile.
-- [ ] Confirm both new DNS names and TLS; if unavailable, finish local code/verification and clearly report the deployment blocker without breaking the old service.
-- [ ] Push verified immutable commit only to the existing feature branch. Activate with the current deployment implementation, not an older deploy script whose domain rules are stale.
-- [ ] Check exact deployed SHA, both services, HTTPS for all four hosts, old read-only public document, temporary new short-link upload/edit/rollback/delete and cleanup. Keep secrets out of artifacts/log output.
+- [x] Confirm both new DNS names and TLS; if unavailable, finish local code/verification and clearly report the deployment blocker without breaking the old service.
+- [x] Push verified immutable commit only to the existing feature branch. Activate with the current deployment implementation, not an older deploy script whose domain rules are stale.
+- [x] Check exact deployed SHA, both services, HTTPS for all four hosts, old read-only public document, temporary new short-link upload/edit/rollback/delete and cleanup. Keep secrets out of artifacts/log output.
